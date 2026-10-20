@@ -1,0 +1,35 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+Thumbs.db
+
+# Credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local media, indexes, generated projects and models
+work/
+models/
+library/
+projects/
+my-project/
+out/
+qa/
+*.sqlite
+*.sqlite-*
+*.db
+*.label-queue*.json
+*.index-report.json
+*.mp4
+*.mov
+*.mkv
+*.mp3
+*.wav
+!fixtures/*.wav

@@ -1,0 +1,152 @@
+{
+  "verified_on": "2026-10-20",
+  "python": "3.12.7",
+  "command": "MONTAGE_TEST_MODEL=\"$PWD/work/models/faster-whisper-tiny\" work/montage-venv/bin/python -m unittest discover -s outputs/audio-montage -p 'test_*.py' -v",
+  "result": {
+    "tests_run": 17,
+    "passed": 17,
+    "skipped": 0,
+    "elapsed_seconds": 16.401
+  },
+  "passed": [
+    "Chinese speech transcription using actual local faster-whisper tiny model, CPU int8",
+    "Word timestamps retained and grouped into 4 phrases; original ASR retained",
+    "Existing timing protected from overwrite",
+    "Draft video/audio/text tracks, unique project IDs, microsecond timeline, original audio muted",
+    "Draft copied media paths exist and imported by pyJianYingDraft template reader",
+    "Content-hash incremental index and three-frame clip extraction",
+    "Only reviewed visual descriptions enter local content search",
+    "Required, excluded and minimum-duration filters",
+    "Candidate selection with backup and review flag reset",
+    "Changed media does not reuse old labels",
+    "Missing and out-of-range sources rejected",
+    "Real MP4 encode/decode, duration and audio track validated",
+    "SRT timestamps preserved",
+    "Rendered-video and edit-plan fingerprints prevent stale review",
+    "Existing exports not overwritten"
+  ],
+  "asr_sample": {
+    "reference": "把插排放进收纳盒。整理好电线，然后盖上盖子。现在，桌面变得整洁了。",
+    "observed": "把插排放进收纳盒、整理好电线、然后盖上盖子,现在桌面变得整结了。",
+    "reviewed": false,
+    "limitation": "tiny 模型将整洁识别成整结；测试不证明真实音频精度。"
+  },
+  "model": {
+    "repository": "Systran/faster-whisper-tiny",
+    "revision": "d90ca5fe260221311c53c58e660288d3deb8d356",
+    "model_bin_sha256": "dcb76c6586fc06cbdac6dd21f14cfd129cc4cdd9dce19bf4ffa62e59cbe6e6d1",
+    "directory": "../../work/models/faster-whisper-tiny"
+  },
+  "not_verified": [
+    "Opening the generated draft in the user's actual Jianying version; no Jianying application detected",
+    "Actual user media, semantic match quality or edit style"
+  ],
+  "not_implemented": [
+    "Automatic visual model annotation backend",
+    "Embedding/vector semantic retrieval",
+    "Subtitle burn-in",
+    "BGM and transition effects",
+    "Registration into the Jianying draft list"
+  ],
+  "primary_languages": [
+    "en",
+    "es"
+  ],
+  "additional_passed": [
+    "Actual English and Spanish speech transcription preserving source language",
+    "Automatic detection of Spanish on synthetic fixture",
+    "Silent audio rejected before transcript publication",
+    "Latin word-aware grouping; abbreviations, contractions and decimal boundaries",
+    "Balanced subtitle wrapping preserving Spanish accents and complete words",
+    "Unicode English/Spanish label retrieval with multilingual aliases and ñ distinction",
+    "Latin required/forbidden filters use word boundaries",
+    "Stale candidates blocked after query changes",
+    "Missing cached keyframes repaired without repeating annotation",
+    "ASR/reference differences including accents and numbers reported without changing timing",
+    "Media interval validation uses video stream duration rather than longer audio/container",
+    "Full render input signatures include audio, timing, project settings and source media",
+    "Atomic JSON plan writes"
+  ],
+  "test_method": "Real local multilingual tiny model plus macOS synthesized English, Spanish and Chinese fixtures; real FFmpeg encode/decode and draft library round-trip.",
+  "limitations": [
+    "Synthetic clean speech tests do not establish accuracy for accents, noise or the user's actual recording",
+    "Cross-language lexical retrieval requires multilingual labels, aliases or a same-language query; no automatic translation service is implemented",
+    "Semantic visual labels still require initial review",
+    "Current Mac Jianying editor opening remains unverified"
+  ],
+  "aspect_policy": {
+    "source": "exact 9:16 display aspect ratio only",
+    "output": "9:16 only",
+    "checks": [
+      "pixel aspect ratio",
+      "display rotation",
+      "index intake exclusions",
+      "old index retrieval",
+      "candidate application",
+      "manual selection validation",
+      "render",
+      "draft export"
+    ],
+    "non_portrait_handling": "exclude; never crop, stretch or pad to admit",
+    "verified_cases": [
+      "portrait accepted",
+      "landscape excluded",
+      "square excluded",
+      "non-square SAR changing display ratio rejected",
+      "90-degree rotation resulting in portrait accepted and rendered",
+      "legacy indexed landscape cannot be searched or chosen",
+      "manual landscape selection blocks MP4 and draft export",
+      "nonportrait project dimensions rejected"
+    ]
+  },
+  "original_audio_option": {
+    "label": "保留原视频声音",
+    "scope": "whole project",
+    "default": false,
+    "entry_points": [
+      "settings native checkbox",
+      "set-audio --keep-original-audio",
+      "set-audio --no-keep-original-audio",
+      "init --keep-original-audio"
+    ],
+    "verified": [
+      "Original 880 Hz source absent with option off, narration 440 Hz present",
+      "Original 880 Hz and narration 440 Hz both present with option on",
+      "Source track delayed start remains silent before its sound begins",
+      "Video without an audio track does not disrupt narration",
+      "Selected interval after source audio ends padded with silence",
+      "Jianying video segment volume follows the same on/off option",
+      "Changing option invalidates old review records"
+    ],
+    "ui": "Tkinter import verified (Tk 8.6); native checkbox not automated-click tested",
+    "editor_open_verified": false
+  },
+  "shot_planning": {
+    "implemented": [
+      "Reviewed usable ranges and complete action boundaries constrain source trimming",
+      "Single source preferred; bounded beam search combines short clips with continuous narration",
+      "No automatic looping or speed changes; no complete solution leaves missing material",
+      "Whole-film avoidance of overlapping intervals with identical content hashes",
+      "Optional subject, scene, shot size and direction tags assist transition ranking",
+      "Proposal generation is separate from application; backups and fresh review flags",
+      "Application rechecks source and label fingerprints, aspect ratio and original labeled ranges",
+      "Multi-part render, review frames, source-audio toggle and Jianying track export"
+    ],
+    "verified": [
+      "Real red/blue source videos decoded at expected output times",
+      "Six-second narration covered by two distinct four-second source files",
+      "Nine-second request from eight seconds of source rejected without repeat filler",
+      "Two-second complete action retained; shorter requested interval rejected",
+      "Single-source solution preferred when sufficient; tiny tail not filled with a flash cut",
+      "Repeated source interval blocks final output unless explicitly allowed",
+      "Incorrect part totals, tampered source ranges and stale labels rejected",
+      "Six review frames for two parts; two draft video segments with continuous subtitle timeline"
+    ],
+    "limitations": [
+      "No automatic visual action-boundary detector; unknown ranges use a reviewable center candidate",
+      "Text rank and metadata continuity are heuristics, not measured visual semantics",
+      "Bounded candidate and beam search can miss feasible arrangements",
+      "No perceptual deduplication of re-encoded or visually similar footage"
+    ]
+  }
+}
