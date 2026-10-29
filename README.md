@@ -250,3 +250,50 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 本次完整测试包括英文、西语及中文实际模型推理、跨语言标签和重音检索、字幕分词、原稿对比、素材缓存修复、候选回填与版本拦截、MP4 编解码、草稿三轨导出及库内回读。详情见 verification.json。测试音频位于 fixtures/；它们是本地合成的语音，非用户录音。
 
 提供真实素材的方法见 INTAKE.md。真实素材的音画匹配精度仍需接入后实测，不能由这些程序测试替代。
+
+## 长期素材理解（框架）
+
+新增按原视频保存的理解记录模板，包含产品身份、跨产品复用限制、语义片段、
+动作区间、观察事实、用途解释、证据和分项审核状态。命令与范围见
+[UNDERSTANDING.md](UNDERSTANDING.md)。已接入观察抽帧、Codex 复核结果入库和现有选片检索；视觉理解由 Codex 查看证据完成。
+
+## 项目产品规则与统一入口
+
+```bash
+./run.sh set-product ./my-project --model MODEL-A
+./run.sh workflow ./my-project
+./run.sh workflow ./my-project --stage plan --database ./library/index.sqlite
+./run.sh workflow ./my-project --stage apply
+./run.sh workflow ./my-project --stage preview
+# 实际审核后再正式输出：
+./run.sh workflow ./my-project --stage final
+```
+
+项目型号由未设置型号的分镜继承。启用后，缺少产品身份的旧选片也会被渲染及
+草稿校验拦截，需重新选片。分镜可显式指定另一个型号。
+方案绑定项目配置，配置变化后需重新规划。
+候选、方案和视频自动复制旧版本到同目录 history/，再生成新版本；
+生成失败保留旧文件。理解结果导入也保存记录和旧语义片段快照。
+统一入口保留方案应用和实际审核阶段，不会自动把 reviewed 改为 true。
+
+本次改动按用户要求未运行测试或媒体验证。当前仍使用原来的两轮视频编码，
+尚未改变补尾帧与时长处理；来源权限和自由文本限制仍需实际审核。
+
+## 新增素材管理能力
+
+联系表、选片反馈、近似素材提示与使用范围约束见
+[UNDERSTANDING.md](UNDERSTANDING.md#联系表反馈相似提示与权限)。
+
+渲染改为每段编码一次，末段补足统一帧网格，最终合配音时复制视频流；
+保留原声的混音逻辑继续使用原流程。最终视频仍执行原有解码与时长检查。
+本次未实际运行新路径，帧边界、编码拼接和音画同步尚未经媒体验证。
+
+以上实现取代前文“仍使用两轮编码”的旧说明。来源与自由文本限制现在参与候选
+提示和正式输出审核；具体授权事实仍需有依据的录入。
+
+## 可选 ElevenLabs
+
+可通过 `elevenlabs --mode tts/transcribe/align` 生成配音及时间戳、转写已有配音、
+或将原稿与配音强制对齐，结果接入现有时间轴与字幕流程。
+配置、费用开关、缓存和恢复方式见 [ELEVENLABS.md](ELEVENLABS.md)。
+默认流程仍不调用外部服务；此适配代码尚未经真实 API 或本地执行验证。

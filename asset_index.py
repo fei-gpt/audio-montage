@@ -221,12 +221,15 @@ def digest_json(value):
 
 
 def request_signature(shot):
-    return digest_json({k: shot.get(k) for k in ['start', 'end', 'text', 'query', 'required', 'forbidden']})
+    return digest_json({k: shot.get(k) for k in ['start', 'end', 'text', 'query', 'required', 'forbidden', 'product_model']})
 
 
-def search(database, query, minimum=0, required=(), forbidden=(), limit=5, path_cache=None):
+def search(database, query, minimum=0, required=(), forbidden=(), limit=5, path_cache=None, product_model=None):
     if not math.isfinite(minimum) or minimum < 0 or type(limit) is not int or limit < 1:
         raise ValueError('min-duration 必须非负，limit 必须为正整数')
+    from library_tools import policy
+    feedback_path = Path(database).resolve().with_suffix('.feedback.json')
+    feedback_events = read(feedback_path).get('events', []) if feedback_path.exists() else []
     query_tokens = tokens(query)
     if not query_tokens:
         return []
@@ -236,6 +239,13 @@ def search(database, query, minimum=0, required=(), forbidden=(), limit=5, path_
         if row['end'] - row['start'] < minimum - 0.001:
             continue
         labels = json.loads(row['labels'])
+        if product_model:
+            product = labels.get('product', {})
+            if product.get('reuse_scope') != 'generic_context' and not (
+                product.get('reuse_scope') == 'product_specific'
+                and product.get('model') == product_model
+            ):
+                continue
         # Directory and filename are excluded from content ranking.
         text = label_text(labels)
         if any(not contains(text, t) for t in required) or any(contains(text, t) for t in forbidden):
@@ -260,31 +270,37 @@ def search(database, query, minimum=0, required=(), forbidden=(), limit=5, path_
                         'source_end': row['end'], 'rank_score': round(score, 4),
                         'asset_hash': row['asset_hash'],
                         'usable_ranges': usable_ranges(labels, row['start'], row['end']),
+                        'product': labels.get('product', {}), 'rights': labels.get('rights', {}),
+                        'policy_warnings': policy(labels, product_model),
                         'visual': {k: labels.get(k, '') for k in ['subject', 'scene', 'shot_size', 'screen_direction']},
+                        'feedback_score': sum(1 for e in feedback_events if e.get('decision') == 'selected'
+                                              if e.get('clip_id') == row['id'] and e.get('labels_sha256') == digest_json(labels)),
                         'matched_terms': sorted(overlap), 'description': labels.get('description', ''),
                         'labels_sha256': digest_json(labels),
                         'frames': json.loads(row['frames']),
                         'note': '本地文本排序分数，不是匹配概率；需要检查动作起止和语义。'})
     db.close()
-    return sorted(results, key=lambda r: (-r['rank_score'], r['clip_id']))[:limit]
+    return sorted(results, key=lambda r: (-r['rank_score'], -r.get('feedback_score', 0), r['clip_id']))[:limit]
 
 
 def search_command(args):
     print(json.dumps(search(args.database, args.query, args.min_duration, args.required,
-                            args.forbidden, args.limit), ensure_ascii=False, indent=2))
+                            args.forbidden, args.limit, product_model=args.product_model), ensure_ascii=False, indent=2))
 
 
 def candidates(args):
     root = Path(args.project).resolve()
     shots = read(root / 'plans/edit.json')['shots']
     output = root / 'plans/candidates.json'
-    if output.exists():
-        raise ValueError('candidates.json 已存在，请先备份移走')
+    from workflow import archive
+    archive(output)
     rows, path_cache = [], {}
     for shot in shots:
+        from workflow import effective_shot
+        shot = effective_shot(root, shot)
         query = shot.get('query') or shot.get('text') or ''
         found = search(args.database, query, shot['end'] - shot['start'],
-                       shot.get('required', []), shot.get('forbidden', []), args.limit, path_cache)
+                       shot.get('required', []), shot.get('forbidden', []), args.limit, path_cache, shot.get('product_model'))
         rows.append({'shot_id': shot['id'], 'query': query, 'candidates': found,
                      'request_sha256': request_signature(shot),
                      'status': 'needs_review' if found else 'missing_material'})
@@ -301,7 +317,8 @@ def choose(args):
         raise ValueError('镜头 ID 不存在')
     candidates_data = read(root / 'plans/candidates.json')
     group = next((s for s in candidates_data['shots'] if s['shot_id'] == args.shot), None)
-    if not group or group.get('request_sha256') != request_signature(shot):
+    from workflow import effective_shot
+    if not group or group.get('request_sha256') != request_signature(effective_shot(root, shot)):
         raise ValueError('镜头文案、时长或检索条件已改变，请重新生成候选')
     candidate = next((c for c in (group or {}).get('candidates', []) if c['clip_id'] == args.clip), None)
     if not candidate:
@@ -350,6 +367,7 @@ def register(sub):
     p.add_argument('--window', type=float, default=6); p.add_argument('--scene', type=float, default=0.3); p.set_defaults(func=index_library)
     p = sub.add_parser('import-labels'); p.add_argument('--database', required=True); p.add_argument('labels'); p.set_defaults(func=import_labels)
     p = sub.add_parser('search'); p.add_argument('--database', required=True); p.add_argument('--query', required=True)
+    p.add_argument('--product-model', help='仅检索此型号与通用情境，排除身份未知素材')
     p.add_argument('--min-duration', type=float, default=0); p.add_argument('--required', nargs='*', default=[])
     p.add_argument('--forbidden', nargs='*', default=[]); p.add_argument('--limit', type=int, default=5); p.set_defaults(func=search_command)
     p = sub.add_parser('candidates'); p.add_argument('project'); p.add_argument('--database', required=True)

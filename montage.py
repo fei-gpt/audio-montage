@@ -584,6 +584,17 @@ def validate(root):
             if source_path not in source_cache:
                 source_cache[source_path] = (probe(source_path), fingerprint(source_path))
             media, source_hash = source_cache[source_path]
+            if sel.get('rights', {}).get('usage') == 'prohibited':
+                raise ValueError('素材被明确标记为禁止使用')
+            from library_tools import policy
+            warnings.extend(f'{sid}: {issue}' for issue in policy(sel, shot.get('product_model') or config.get('product_model')))
+            target_model = shot.get('product_model') or config.get('product_model')
+            if target_model:
+                product = sel.get('product', {})
+                if product.get('reuse_scope') != 'generic_context' and not (
+                    product.get('reuse_scope') == 'product_specific' and product.get('model') == target_model
+                ):
+                    raise ValueError('选片产品身份不符合项目型号；请重新检索确认产品身份的素材')
             portrait_geometry(media)
             if not any(s['codec_type'] == 'video' for s in media['streams']):
                 raise ValueError('素材没有视频轨道')
@@ -707,19 +718,22 @@ def render(args):
     if args.final and report['warnings']:
         raise ValueError('正式输出需要先处理复核项：\n' + '\n'.join(report['warnings']))
     output = root / 'out' / ('final.mp4' if args.final else 'preview.mp4')
-    if output.exists():
-        raise ValueError('输出文件已存在，请先自行重命名或移走，避免覆盖')
+    from workflow import archive
+    archive(output)
     w, h, fps = config['width'], config['height'], config['fps']
     if not args.final:
         ratio = min(1, 640 / max(w, h))
         w, h = max(2, round(w * ratio / 2) * 2), max(2, round(h * ratio / 2) * 2)
     with tempfile.TemporaryDirectory(prefix='render-', dir=root) as tmp:
         paths, original_audio_paths, missing_audio = [], [], []
+        audio_presence = {}
         for i, shot in enumerate(shots):
             sel = shot['selection']
             dest = Path(tmp) / f'{i:05}.mp4'
             fit = f'scale={w}:{h}'  # Eligible sources have exact 9:16 display ratio.
             frame_count = round(shot['end'] * fps) - round(shot['start'] * fps)
+            if i == len(shots) - 1:
+                frame_count += max(0, math.ceil(config['duration'] * fps) - round(config['duration'] * fps))
             if frame_count < 1:
                 raise ValueError(f'{shot["id"]}: 镜头不足一帧，请合并镜头')
             run(['ffmpeg', '-v', 'error', '-nostdin', '-ss', sel['source_start'], '-i', sel['path'],
@@ -730,7 +744,9 @@ def render(args):
             if config.get('keep_original_audio', False):
                 audio_dest = Path(tmp) / f'{i:05}.wav'
                 audio_duration = frame_count / fps
-                has_audio = any(s['codec_type'] == 'audio' for s in probe(sel['path'])['streams'])
+                if sel['path'] not in audio_presence:
+                    audio_presence[sel['path']] = any(s['codec_type'] == 'audio' for s in probe(sel['path'])['streams'])
+                has_audio = audio_presence[sel['path']]
                 if has_audio:
                     # first_pts=0 preserves a source track's delayed start by
                     # filling silence instead of moving the sound earlier.
@@ -761,8 +777,7 @@ def render(args):
             command += ['-i', original_track, '-filter_complex',
                         '[1:a:0][2:a:0]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.98:latency=1[mixed]']
             audio_map = ['-map', '[mixed]']
-        run(command + ['-map', '0:v:0'] + audio_map + ['-vf', f'tpad=stop_mode=clone:stop_duration={2 / fps}',
-             '-t', config['duration'], '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast',
+        run(command + ['-map', '0:v:0'] + audio_map + ['-t', config['duration'], '-c:v', 'copy',
              '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', staged])
         run(['ffmpeg', '-v', 'error', '-nostdin', '-i', staged, '-f', 'null', '-'])
         result = probe(staged)
@@ -819,6 +834,14 @@ def main():
     asset_index.register(sub)
     import planner
     planner.register(sub)
+    import understanding
+    understanding.register(sub)
+    import workflow
+    workflow.register(sub)
+    import library_tools
+    library_tools.register(sub)
+    import elevenlabs_adapter
+    elevenlabs_adapter.register(sub)
     args = parser.parse_args()
     try:
         args.func(args)

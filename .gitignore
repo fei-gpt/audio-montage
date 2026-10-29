@@ -33,3 +33,8 @@ qa/
 *.mp3
 *.wav
 !fixtures/*.wav
+
+# Generated understanding and workflow evidence
+**/understanding/evidence/
+**/understanding/imports/
+**/elevenlabs-cache/

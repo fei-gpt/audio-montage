@@ -56,6 +56,7 @@ def trim_window(candidate, region, duration):
     source_start = min(max(preferred, low), max(low, high))
     result = {'path': candidate['path'], 'clip_id': candidate['clip_id'],
             'asset_hash': candidate['asset_hash'], 'labels_sha256': candidate['labels_sha256'],
+            'product': candidate.get('product', {}), 'rights': candidate.get('rights', {}),
             'source_start': source_start, 'duration': duration,
             'allowed_start': a, 'allowed_end': b, 'trim_method': method,
             'reason': region.get('reason') or candidate.get('description', '')}
@@ -155,8 +156,8 @@ def auto_plan(args):
     source_path = root / 'plans/edit.json'
     original = read(source_path)
     output = root / 'plans/proposal.json'
-    if output.exists():
-        raise ValueError('proposal.json 已存在，请先备份移走')
+    from workflow import archive
+    archive(output)
     if not 1 <= args.max_parts <= 8 or not math.isfinite(args.min_part) or args.min_part <= 0 or not 0 < args.min_score <= 1:
         raise ValueError('max-parts 应为 1—8，min-part 必须大于零，min-score 应在 0—1 之间')
     proposed = copy.deepcopy(original)
@@ -183,10 +184,12 @@ def auto_plan(args):
         if not (shot.get('query') or shot.get('text')):
             neighbors = sorted(range(len(shots)), key=lambda n: (abs(n - index), n))
             request = next((shots[n] for n in neighbors if shots[n].get('query') or shots[n].get('text')), shot)
+        from workflow import effective_shot
+        target = effective_shot(root, shot)
         query = shot.get('query') or request.get('query') or request.get('text') or ''
         required = shot.get('required') or request.get('required', [])
         forbidden = shot.get('forbidden') or request.get('forbidden', [])
-        found = ix.search(args.database, query, 0, required, forbidden, 24, cache)
+        found = ix.search(args.database, query, 0, required, forbidden, 24, cache, target.get('product_model'))
         found = [c for c in found if c['rank_score'] >= args.min_score]
         chain = select_chain(found, shot['end'] - shot['start'], used, previous,
                              args.max_parts, args.min_part)
@@ -203,7 +206,7 @@ def auto_plan(args):
         else:
             report.append({'shot_id': shot['id'], 'status': 'missing_material', 'query': query,
                            'reason': '没有满足语义词项、完整动作、时长、去重和片段数量约束的完整方案'})
-    save(output, {'version': 1, 'edit_sha256': fingerprint(source_path),
+    save(output, {'version': 1, 'project_sha256': fingerprint(root / 'project.json'), 'edit_sha256': fingerprint(source_path),
                   'database': str(Path(args.database).resolve()), 'edit': proposed, 'report': report,
                   'note': '基于已复核标签的本地规则规划，不证明视觉语义或衔接质量；未修改 edit.json。'})
     print(output)
@@ -215,8 +218,11 @@ def apply_plan(args):
     proposal = read(args.proposal)
     if proposal['edit_sha256'] != fingerprint(path):
         raise ValueError('剪辑清单已改变，请重新生成方案')
+    if proposal.get('project_sha256') != fingerprint(root / 'project.json'):
+        raise ValueError('项目配置已改变，请重新生成方案')
     shots = expand_shots(proposal['edit']['shots'])
     db = ix.connect(proposal['database'])
+    media_cache = {}
     try:
         for shot in shots:
             selection = shot.get('selection') or {}
@@ -226,8 +232,10 @@ def apply_plan(args):
             if not row or not row['reviewed'] or ix.digest_json(json.loads(row['labels'])) != selection['labels_sha256']:
                 raise ValueError('素材标注已改变，请重新生成方案')
             from montage import portrait_geometry, probe
-            portrait_geometry(probe(selection['path']))
-            if selection.get('asset_hash') != row['asset_hash'] or selection.get('asset_hash') != fingerprint(selection['path']):
+            if selection['path'] not in media_cache:
+                portrait_geometry(probe(selection['path']))
+                media_cache[selection['path']] = fingerprint(selection['path'])
+            if selection.get('asset_hash') != row['asset_hash'] or selection.get('asset_hash') != media_cache[selection['path']]:
                 raise ValueError('素材已改变，请重新生成方案')
             start = selection.get('source_start')
             duration = shot['end'] - shot['start']
