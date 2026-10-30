@@ -844,6 +844,8 @@ def main():
     elevenlabs_adapter.register(sub)
     import jianying_segments
     jianying_segments.register(sub)
+    import content_recognition
+    content_recognition.register(sub)
     args = parser.parse_args()
     try:
         args.func(args)

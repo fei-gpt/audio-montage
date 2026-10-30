@@ -309,3 +309,11 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 新增 `export-timeline-segments`：读取已有剪映草稿，逐片段调用 jy-draftc 原生引擎
 导出独立视频，支持加密草稿处理及断点续跑。此功能与 `export-draft` 相互独立。
 运行平台、版本匹配、命令及限制见 [JIANYING_SEGMENTS.md](JIANYING_SEGMENTS.md)。
+
+## 内容识别与多片段提取
+
+核心入口 `recognize-content` 为整段视频准备识别任务，视觉助手按
+[内容识别标准](CONTENT_STANDARD.md)判断有效/无效/待确认区间，再用
+`extract-segments` 导出多个独立素材。带货角色、画面事实、技术质量和本次需求分开记录。
+WorkBuddy 项目技能位于 `.codebuddy/skills/content-recognition/`。
+此流程不自动调用视觉 API，需助手实际观察证据。
