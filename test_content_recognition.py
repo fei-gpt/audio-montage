@@ -117,3 +117,10 @@ class ContentExtractionTest(unittest.TestCase):
         self.assertEqual([r['end'] for r in pending], [.9, 3.1])
         self.assertTrue(all(__import__('pathlib').Path(r['review_video']).is_file() for r in pending))
         self.assertEqual(m.read(root / 'progress.json')['status'], 'needs_manual_review')
+
+        # Moving a previously accepted clip to manual review must retire its old output.
+        task['segments'][0]['end'] = 3.2
+        m.save(path, task)
+        c.extract(Namespace(task=path))
+        self.assertEqual(len(list((root / 'clips').glob('*.mp4'))), 1)
+        self.assertTrue(list((root / 'clips/history').glob('*.mp4')))

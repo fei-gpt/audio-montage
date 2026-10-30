@@ -55,6 +55,7 @@ def extract(args):
     if task.get('standard') == 'content-v2' and task.get('requirements', {}).get('confirmed') is not True:
         raise ValueError('需要将用户原始要求整理为已核对的任务条件')
     selected, ids, manual_review = [], set(), []
+    uncertain = [s for s in task['segments'] if s.get('decision') == 'uncertain']
     for segment in task['segments']:
         if segment.get('decision') not in {'keep', 'reject', 'uncertain'}:
             raise ValueError('decision 必须为 keep/reject/uncertain')
@@ -101,6 +102,15 @@ def extract(args):
         identity = digest_json({'source': task['source_sha256'], 'start': candidate['start'],
                                 'end': candidate['end'], 'audio': task.get('keep_original_audio', True)})
         review_video = review_folder / f'{index:04}-{identity[:12]}.mp4'
+        if review_video.exists():
+            try:
+                review_info = probe(review_video)
+                if abs(media_duration(review_info, 'video') - candidate['duration']) > .15:
+                    raise ValueError('待审视频时长不符')
+            except (ValueError, OSError, KeyError):
+                from workflow import archive
+                archive(review_video)
+                review_video.unlink()
         if not review_video.exists():
             staged_review = review_video.with_suffix('.partial.mp4')
             audio_args = ['-map', '0:a:0?', '-c:a', 'aac'] if task.get('keep_original_audio', True) else ['-an']
@@ -118,6 +128,19 @@ def extract(args):
     destination.mkdir(exist_ok=True)
     manifest_path = root / 'extraction.json'
     previous = read(manifest_path).get('clips', []) if manifest_path.exists() else []
+    # Keep only current automatic deliverables in clips/; preserve superseded files.
+    from asset_index import digest_json
+    active_names = set()
+    for index, s in enumerate(selected, 1):
+        key = digest_json({'source_sha256': task['source_sha256'], 'id': s['id'],
+                          'start': s['start'], 'end': s['end'], 'audio': task.get('keep_original_audio', True)})
+        active_names.add(f'{index:04}-{key[:12]}.mp4')
+    for existing in destination.glob('*.mp4'):
+        if existing.name not in active_names and not existing.name.endswith('.partial.mp4'):
+            from workflow import archive
+            archive(existing)
+            existing.unlink()
+    save(root / 'uncertain-review.json', {'segments': uncertain})
     completed = []
     for index, segment in enumerate(selected, 1):
         signature = {'source_sha256': task['source_sha256'], 'id': segment['id'],
@@ -150,12 +173,12 @@ def extract(args):
         save(manifest_path, {'clips': completed})
         save(root / 'progress.json', {'status': 'extracting', 'completed': completed,
                                      'remaining': [s['id'] for s in selected[index:]]})
-    save(manifest_path, {'clips': completed, 'decisions': task['segments'], 'manual_review': manual_review})
+    save(manifest_path, {'clips': completed, 'decisions': task['segments'], 'manual_review': manual_review, 'uncertain': uncertain})
     with (root / 'clips.csv').open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.DictWriter(stream, fieldnames=['id', 'start', 'end', 'output', 'reason'], extrasaction='ignore')
         writer.writeheader(); writer.writerows(completed)
-    save(root / 'progress.json', {'status': 'needs_manual_review' if manual_review else 'completed', 'completed': completed,
-                                    'remaining': [s['id'] for s in manual_review], 'manual_review': manual_review})
+    save(root / 'progress.json', {'status': 'needs_manual_review' if manual_review or uncertain else 'completed', 'completed': completed,
+                                    'remaining': [s['id'] for s in manual_review + uncertain], 'manual_review': manual_review, 'uncertain': uncertain})
     print(manifest_path)
 
 
