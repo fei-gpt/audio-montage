@@ -27,3 +27,6 @@ description: 理解整段原视频，按用户剪辑目的识别有效与无效�
 默认 general，识别为带货任务再启用 commerce；不要将带货标准泛化到所有素材。
 按 content-v2 模板填写 assessment.base/profile/user；用户硬条件按 id 逐项检查，
 偏好作为权衡，保留 alternatives/tradeoffs。不存在“总分高即有效”的决策捷径。
+
+自动导出单镜头硬区间1–3秒（含端点）。短于1秒或超过3秒时保留完整候选，交 manual-review
+清单，不强行补长、截断或机械分段。交付时明确自动导出数量与时长越界待审数量。

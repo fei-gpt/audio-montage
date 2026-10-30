@@ -93,3 +93,27 @@ class ContentExtractionTest(unittest.TestCase):
         c.extract(Namespace(task=path))
         for row in m.read(root / 'extraction.json')['clips']:
             self.assertFalse(any(s['codec_type'] == 'audio' for s in m.probe(row['output'])['streams']))
+
+    def test_three_second_limit_routes_complete_long_action_to_review(self):
+        root = self.root / 'duration-task'
+        c.prepare(Namespace(video=self.video, request='完整动作', output=root))
+        path = root / 'task.json'
+        task = m.read(path)
+        task['rights']['usage'] = 'allowed'
+        task['analysis']['reviewed'] = True
+        task['requirements']['confirmed'] = True
+        evidence = m.read(next((root / 'evidence').glob('*/observation-*.json')))['evidence']
+        task['segments'] = [dict(id=str(i), start=0, end=end, facts='合成测试', reason='保留完整单元',
+            decision='keep', boundary_reviewed=True, evidence=[evidence[0]],
+            assessment={'base': {k: 'pass' for k in ['content_legibility', 'temporal_integrity', 'technical_usability', 'evidence_sufficiency']}, 'user': []})
+            for i, end in enumerate([1, 3, .9, 3.1])]
+        m.save(path, task)
+        c.extract(Namespace(task=path))
+        manifest = m.read(root / 'extraction.json')
+        self.assertEqual(len(manifest['clips']), 2)
+        self.assertEqual([r['end'] for r in manifest['clips']], [1, 3])
+        pending = m.read(root / 'manual-review.json')['segments']
+        self.assertEqual(len(pending), 2)
+        self.assertEqual([r['end'] for r in pending], [.9, 3.1])
+        self.assertTrue(all(__import__('pathlib').Path(r['review_video']).is_file() for r in pending))
+        self.assertEqual(m.read(root / 'progress.json')['status'], 'needs_manual_review')

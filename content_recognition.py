@@ -16,7 +16,7 @@ def prepare(args):
     digest = fingerprint(source)
     save(task, {'version': 1, 'source': str(source), 'source_sha256': digest,
                 'duration': media_duration(info, 'video'), 'request': args.request,
-                'standard': 'content-v2', 'keep_original_audio': True,
+                'standard': 'content-v2', 'min_clip_seconds': 1.0, 'max_clip_seconds': 3.0, 'keep_original_audio': True,
                 'rights': {'usage': 'unknown'}, 'requirements': {'hard': [], 'preferences': [], 'exclusions': [], 'confirmed': False},
                 'criteria': {'base_version': 'content-v2', 'profiles': ['general'], 'user_revision': 1},
                 'analysis': {'overview': '', 'coverage': [], 'reviewed': False}, 'segments': [],
@@ -54,7 +54,7 @@ def extract(args):
         raise ValueError('需要有依据地确认素材使用权限')
     if task.get('standard') == 'content-v2' and task.get('requirements', {}).get('confirmed') is not True:
         raise ValueError('需要将用户原始要求整理为已核对的任务条件')
-    selected, ids = [], set()
+    selected, ids, manual_review = [], set(), []
     for segment in task['segments']:
         if segment.get('decision') not in {'keep', 'reject', 'uncertain'}:
             raise ValueError('decision 必须为 keep/reject/uncertain')
@@ -89,7 +89,31 @@ def extract(args):
         if not evidence or any(not number(e.get('time')) or not a <= e['time'] <= b
                                or not Path(e.get('path', '')).is_file() for e in evidence):
             raise ValueError('保留片段缺少有效的时间证据')
+        if b - a < 1.0 - 1e-9 or b - a > 3.0 + 1e-9:
+            manual_review.append(dict(segment, review_reason='候选时长不在1–3秒范围，禁止自动补长、截断或作为有效片段交付，需人工审核',
+                                      source=str(source), duration=b - a))
+            continue
         selected.append(segment)
+    review_folder = root / 'manual-review-clips'
+    for index, candidate in enumerate(manual_review, 1):
+        review_folder.mkdir(exist_ok=True)
+        from asset_index import digest_json
+        identity = digest_json({'source': task['source_sha256'], 'start': candidate['start'],
+                                'end': candidate['end'], 'audio': task.get('keep_original_audio', True)})
+        review_video = review_folder / f'{index:04}-{identity[:12]}.mp4'
+        if not review_video.exists():
+            staged_review = review_video.with_suffix('.partial.mp4')
+            audio_args = ['-map', '0:a:0?', '-c:a', 'aac'] if task.get('keep_original_audio', True) else ['-an']
+            run(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-ss', candidate['start'], '-i', source,
+                 '-t', candidate['duration'], '-map', '0:v:0', *audio_args, '-c:v', 'libx264',
+                 '-pix_fmt', 'yuv420p', staged_review])
+            run(['ffmpeg', '-v', 'error', '-nostdin', '-i', staged_review, '-f', 'null', '-'])
+            staged_review.replace(review_video)
+        candidate['review_video'] = str(review_video)
+    save(root / 'manual-review.json', {'min_clip_seconds': 1.0, 'max_clip_seconds': 3.0, 'segments': manual_review})
+    with (root / 'manual-review.csv').open('w', newline='', encoding='utf-8-sig') as stream:
+        writer = csv.DictWriter(stream, fieldnames=['id', 'source', 'start', 'end', 'duration', 'review_video', 'reason', 'review_reason'], extrasaction='ignore')
+        writer.writeheader(); writer.writerows(manual_review)
     destination = root / 'clips'
     destination.mkdir(exist_ok=True)
     manifest_path = root / 'extraction.json'
@@ -113,6 +137,8 @@ def extract(args):
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', staged])
         info = probe(staged)
         portrait_geometry(info)
+        if not 1.0 - 1e-6 <= media_duration(info, 'video') <= 3.0 + 1e-6:
+            raise ValueError('实际输出不在1–3秒范围，停止交付并人工审核')
         if abs(media_duration(info, 'video') - (segment['end'] - segment['start'])) > .15:
             raise ValueError('输出片段时长不符')
         run(['ffmpeg', '-v', 'error', '-nostdin', '-i', staged, '-f', 'null', '-'])
@@ -124,11 +150,12 @@ def extract(args):
         save(manifest_path, {'clips': completed})
         save(root / 'progress.json', {'status': 'extracting', 'completed': completed,
                                      'remaining': [s['id'] for s in selected[index:]]})
-    save(manifest_path, {'clips': completed, 'decisions': task['segments']})
+    save(manifest_path, {'clips': completed, 'decisions': task['segments'], 'manual_review': manual_review})
     with (root / 'clips.csv').open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.DictWriter(stream, fieldnames=['id', 'start', 'end', 'output', 'reason'], extrasaction='ignore')
         writer.writeheader(); writer.writerows(completed)
-    save(root / 'progress.json', {'status': 'completed', 'completed': completed, 'remaining': []})
+    save(root / 'progress.json', {'status': 'needs_manual_review' if manual_review else 'completed', 'completed': completed,
+                                    'remaining': [s['id'] for s in manual_review], 'manual_review': manual_review})
     print(manifest_path)
 
 
