@@ -842,6 +842,8 @@ def main():
     library_tools.register(sub)
     import elevenlabs_adapter
     elevenlabs_adapter.register(sub)
+    import jianying_segments
+    jianying_segments.register(sub)
     args = parser.parse_args()
     try:
         args.func(args)

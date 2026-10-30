@@ -41,7 +41,7 @@ class PipelineTest(unittest.TestCase):
         data = m.read(path)
         for s in data['shots']:
             s.update(purpose='检查测试画面', reviewed=True,
-                     selection={'path': str(self.video), 'source_start': 0.1 + s['start']})
+                     selection={'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(self.video), 'source_start': 0.1 + s['start']})
         m.save(path, data)
         timing = m.read(self.project / 'audio/timing.json')
         timing['reviewed'] = True
@@ -102,7 +102,7 @@ class PipelineTest(unittest.TestCase):
         shot = data['shots'][0]
         m.save(self.project / 'plans/candidates.json', {'shots': [{'shot_id': shot['id'],
             'request_sha256': ix.request_signature(shot), 'candidates': [{'clip_id': 'legacy',
-            'path': str(landscape), 'labels_sha256': ix.digest_json(labels)}]}]})
+            'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(landscape), 'labels_sha256': ix.digest_json(labels)}]}]})
         with self.assertRaises(ValueError):
             ix.choose(Namespace(project=self.project, database=db, shot=shot['id'], clip='legacy'))
         data['shots'][0]['selection']['path'] = str(rotated)
@@ -120,8 +120,8 @@ class PipelineTest(unittest.TestCase):
         self.assertIn('00:00:00,200 --> 00:00:01,130', (self.project / 'out/captions.srt').read_text())
         m.review(args)
         self.assertEqual(len(list((self.project / 'qa/frames').glob('*.jpg'))), 15)
-        with self.assertRaises(ValueError):
-            m.render(args)
+        m.render(args)
+        self.assertTrue(list((self.project / 'out/history').glob('final-*.mp4')))
         data = m.read(self.project / 'plans/edit.json')
         data['shots'][0]['selection']['source_start'] = 0.2
         m.save(self.project / 'plans/edit.json', data)
@@ -137,9 +137,9 @@ class PipelineTest(unittest.TestCase):
         self.select()
         m.save(self.project / 'plans/edit.json', {'shots': [
             {'id': 'S001', 'start': 0, 'end': 1.2, 'purpose': '有原声素材', 'reviewed': True,
-             'selection': {'path': str(source), 'source_start': 0}},
+             'selection': {'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(source), 'source_start': 0}},
             {'id': 'S002', 'start': 1.2, 'end': 2.4, 'purpose': '无原声素材', 'reviewed': True,
-             'selection': {'path': str(self.video), 'source_start': 0.1}}]})
+             'selection': {'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(self.video), 'source_start': 0.1}}]})
         def amplitude(path, start, frequency):
             raw = subprocess.run(['ffmpeg', '-v', 'error', '-ss', str(start), '-i', str(path),
                 '-t', '0.2', '-map', '0:a:0', '-ac', '1', '-ar', '16000', '-f', 'f32le', '-'],

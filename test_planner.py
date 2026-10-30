@@ -51,7 +51,7 @@ class PlannerTest(unittest.TestCase):
         return data
 
     def test_precise_action_and_static_trim(self):
-        candidate = {'path': str(self.red), 'clip_id': 'a', 'asset_hash': 'hash',
+        candidate = {'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(self.red), 'clip_id': 'a', 'asset_hash': 'hash',
                      'labels_sha256': 'labels', 'visual': {}, 'description': 'close lid'}
         action = p.usable_ranges({'usable_ranges': [{'start': 0, 'end': 4, 'kind': 'action',
                    'action_start': 1, 'action_end': 3}]}, 0, 4)[0]
@@ -105,8 +105,8 @@ class PlannerTest(unittest.TestCase):
     def test_multi_part_video_draft_and_audio(self):
         data = copy.deepcopy(self.edit)
         data['shots'][0].update(reviewed=True, selection={'parts': [
-            {'path': str(self.red), 'source_start': 0.5, 'duration': 3},
-            {'path': str(self.blue), 'source_start': 0.25, 'duration': 3}]})
+            {'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(self.red), 'source_start': 0.5, 'duration': 3},
+            {'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(self.blue), 'source_start': 0.25, 'duration': 3}]})
         m.save(self.project / 'plans/edit.json', data)
         m.render(Namespace(project=self.project, final=True))
         video = self.project / 'out/final.mp4'
@@ -141,8 +141,8 @@ class PlannerTest(unittest.TestCase):
         self.assertNotEqual(selected[0]['asset_hash'], selected[1]['asset_hash'])
         data = copy.deepcopy(self.edit)
         data['shots'][0].update(reviewed=True, selection={'parts': [
-            {'path': str(self.red), 'source_start': 0.5, 'duration': 3},
-            {'path': str(self.red), 'source_start': 0.5, 'duration': 3}]})
+            {'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(self.red), 'source_start': 0.5, 'duration': 3},
+            {'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(self.red), 'source_start': 0.5, 'duration': 3}]})
         m.save(self.project / 'plans/edit.json', data)
         self.assertTrue(any('重复使用' in w for w in m.validate(self.project)[3]['warnings']))
         with self.assertRaises(ValueError):

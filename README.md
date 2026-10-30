@@ -1,4 +1,10 @@
-# 配音驱动混剪：基础工作流
+# 配音驱动混剪与素材工作流
+
+**先看 [功能总览与 WorkBuddy 接续说明](CAPABILITIES.md)**：按目标选择功能、输入和输出，区分模拟验证与真实服务验收。
+
+独立功能插件：[剪映时间线逐片段导出](JIANYING_SEGMENTS.md)，WorkBuddy 入口位于 `.codebuddy/skills/jianying-segment-export/`。
+
+## 基础混剪工作流
 
 本工具实现配音驱动的混剪流程。素材处理和检索在本地执行，不发送视频、不调用付费 API。显式执行 download-model 时会联网下载模型。建议使用已验证的 Python 3.12，以及 FFmpeg 和 ffprobe；完整依赖见 requirements.txt。
 
@@ -297,3 +303,9 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 或将原稿与配音强制对齐，结果接入现有时间轴与字幕流程。
 配置、费用开关、缓存和恢复方式见 [ELEVENLABS.md](ELEVENLABS.md)。
 默认流程仍不调用外部服务；此适配代码尚未经真实 API 或本地执行验证。
+
+## 自动导出时间线各片段
+
+新增 `export-timeline-segments`：读取已有剪映草稿，逐片段调用 jy-draftc 原生引擎
+导出独立视频，支持加密草稿处理及断点续跑。此功能与 `export-draft` 相互独立。
+运行平台、版本匹配、命令及限制见 [JIANYING_SEGMENTS.md](JIANYING_SEGMENTS.md)。
