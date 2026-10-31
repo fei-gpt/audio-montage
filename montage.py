@@ -846,6 +846,8 @@ def main():
     jianying_segments.register(sub)
     import content_recognition
     content_recognition.register(sub)
+    import vision_api
+    vision_api.register(sub)
     args = parser.parse_args()
     try:
         args.func(args)

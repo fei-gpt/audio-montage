@@ -317,3 +317,8 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 `extract-segments` 导出多个独立素材。带货角色、画面事实、技术质量和本次需求分开记录。
 WorkBuddy 项目技能位于 `.codebuddy/skills/content-recognition/`。
 此流程不自动调用视觉 API，需助手实际观察证据。
+
+## 可选视觉 API
+
+`analyze-content-api` 支持 DeepSeek、GPT 和 CC Switch 暴露的 OpenAI 兼容图片接口，
+自动解析要求、提出候选并密集复核。配置、费用开关和能力边界见 [VISION_API.md](VISION_API.md)。

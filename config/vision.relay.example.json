@@ -1,0 +1,1 @@
+{"base_url":"http://127.0.0.1:PORT/v1","model":"YOUR_RELAY_VISION_MODEL","api_key_env":"RELAY_API_KEY"}
