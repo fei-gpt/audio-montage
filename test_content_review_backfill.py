@@ -123,11 +123,11 @@ class ReviewBackfillTest(unittest.TestCase):
     def test_reselect_into_out_of_range_duration_goes_to_manual_review(self):
         root, path = self.task()
         c.extract(Namespace(task=path))
-        long_pick = self.decisions(root, [{'id': 'A', 'start': 0, 'end': 3.5, 'reason': '需要完整动作'}], 's4.json')
-        c.reselect_segments(Namespace(task=path, selections=long_pick))
+        short_pick = self.decisions(root, [{'id': 'A', 'start': 0, 'end': .5, 'reason': '保留短动作原区间'}], 's4.json')
+        c.reselect_segments(Namespace(task=path, selections=short_pick))
         pending = m.read(root / 'manual-review.json')['segments']
         self.assertEqual([row['id'] for row in pending], ['A'])
-        self.assertAlmostEqual(pending[0]['duration'], 3.5, delta=.01)
+        self.assertAlmostEqual(pending[0]['duration'], .5, delta=.01)
         self.assertEqual(m.read(root / 'progress.json')['status'], 'needs_manual_review')
         self.assertTrue(pending[0]['review_video'])
         self.assertEqual(len(list((root / 'clips').glob('*.mp4'))), 0)

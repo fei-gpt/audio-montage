@@ -55,7 +55,7 @@ match/mismatch/unknown。
 ## 返回与后续
 
 返回 task.json、api-analysis.json、api-progress.json 和请求缓存。
-之后 extract-segments 默认1–3秒；核实的一镜到底完整展示可例外，其余越界单独待审。例外字段见 CONTENT_STANDARD.md。
+之后 extract-segments 默认1–4秒；核实的一镜到底完整展示可例外，其余越界单独待审。例外字段见 CONTENT_STANDARD.md。
 分析阶段 reviewed 表示完成采样分析，不表示人工逐帧验收，method 保存 api_sampled_frames。
 不自动推断素材授权。--allow-paid 允许图片/文稿发往配置服务并可能计费，不是费用上限。
 不自动重试未知状态请求，不切换替代收费服务。

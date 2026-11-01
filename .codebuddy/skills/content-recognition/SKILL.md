@@ -23,11 +23,11 @@ description: 理解完整视频的展示意图，核实真实切镜，在单镜�
    assessment.base/profile/user、reason、evidence 及原片秒数；保留 alternatives/tradeoffs。
    requirements 分 hard/preferences/exclusions，硬条件按 ID 逐项核对；未知用 uncertain。
    不将静止、自然手持、无 CTA 或未包含整套操作一律判废；说明本段表达什么、效果何时出现。
-4. 普通候选默认1–3秒。明显切镜必须拆分，不允许自动片段内部含切点；
+4. 普通候选默认1–4秒。明显切镜必须拆分，不允许自动片段内部含切点；
    拆分后只能在所属镜头内向前/向后补充相关画面，不跨切点凑时长。
    明确一镜到底且需完整展示效果的候选不受默认范围限制，按标准填写 duration_policy、
    display_intent、duration_reason、shot_review（范围/连续性/实际核查方法/证据）。
-   不按3秒机械切碎，不截断必要效果，也不借一镜到底保留无关空等。
+   不按4秒机械切碎，不截断必要效果，也不借一镜到底保留无关空等。
 5. 覆盖与边界实际核实后才置 reviewed/boundary_reviewed。observe-media 支持
    --start/--end/--every 加密观察；固定窗口不是剪辑边界，不能靠外推补齐未观察动作。
    权限依据来自用户资料，未知不自行声明 allowed。

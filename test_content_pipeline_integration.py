@@ -213,7 +213,7 @@ class ContentPipelineIntegrationTest(unittest.TestCase):
         self.assertEqual(segments['S0007']['decision'], 'uncertain')
         self.assertIn('事实', segments['S0007']['review_reason'])
 
-        # Export: only verified 1-3s clips; long and unresolved candidates stay for humans.
+        # Export: only verified 1-4s clips; long and unresolved candidates stay for humans.
         task['rights']['usage'] = 'allowed'
         m.save(path, task)
         c.extract(Namespace(task=path))
@@ -225,7 +225,7 @@ class ContentPipelineIntegrationTest(unittest.TestCase):
         self.assertEqual(m.read(root / 'progress.json')['status'], 'needs_manual_review')
         for row, colour in zip(manifest['clips'], [0, 1]):
             info = m.probe(row['output'])
-            self.assertTrue(1 <= m.media_duration(info, 'video') <= 3)
+            self.assertTrue(1 <= m.media_duration(info, 'video') <= 4)
             pixels = subprocess.run(['ffmpeg', '-v', 'error', '-i', row['output'], '-frames:v', '1',
                                      '-vf', 'scale=1:1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
                                     capture_output=True, check=True).stdout

@@ -316,7 +316,7 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 
 ## 内容识别与多片段提取
 
-执行顺序：先理解产品/内容的展示意图，再核实硬切、跳剪与转场；在单个物理镜头内选材，最后检查默认1–3秒、一镜到底完整展示例外及实际导出边界。同功能的多个镜头可关联，自动片段不可跨真实切镜；展示价值与性能真实性分开判断。详见内容识别标准。
+执行顺序：先理解产品/内容的展示意图，再核实硬切、跳剪与转场；在单个物理镜头内选材，最后检查默认1–4秒、一镜到底完整展示例外及实际导出边界。同功能的多个镜头可关联，自动片段不可跨真实切镜；展示价值与性能真实性分开判断。详见内容识别标准。
 
 核心入口 `recognize-content` 为整段视频准备识别任务，视觉助手按
 [内容识别标准](CONTENT_STANDARD.md)与[执行及独立复核规范](CONTENT_REVIEW.md)判断有效/无效/待确认区间，再用
@@ -324,7 +324,7 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 WorkBuddy 项目技能位于 `.codebuddy/skills/content-recognition/`。
 此流程不自动调用视觉 API，需助手实际观察证据。
 
-自动片段默认1–3秒；核实为一镜到底且需完整展示效果时可超出范围，填写连续性证据与例外理由。其他越界完整候选不截断、不补长、不变速，
+自动片段默认1–4秒；核实为一镜到底且需完整展示效果时可超出范围，填写连续性证据与例外理由。其他越界完整候选不截断、不补长、不变速，
 单独导出到 `manual-review-clips/` 并写入 `manual-review.json`；内容或用户条件未确认的候选
 写入 `uncertain-review.json`。两者都让 `progress.json` 保持 `needs_manual_review`。
 

@@ -13,6 +13,8 @@ from workflow import archive
 DIMENSIONS = ('content_legibility', 'temporal_integrity', 'technical_usability', 'evidence_sufficiency')
 VERDICTS = {'pass', 'conditional', 'fail', 'unknown', 'not_applicable'}
 DECISIONS = {'keep', 'reject', 'uncertain'}
+MIN_CLIP_SECONDS = 1.0
+MAX_CLIP_SECONDS = 4.0
 
 
 def _now():
@@ -87,7 +89,7 @@ def prepare(args):
     save(task, {'version': 1, 'source': str(source), 'source_sha256': digest,
                 'duration': media_duration(info, 'video'), 'request': args.request,
                 'duration_policy': 'single_take_complete_display',
-                'standard': 'content-v2', 'min_clip_seconds': 1.0, 'max_clip_seconds': 3.0, 'keep_original_audio': True,
+                'standard': 'content-v2', 'min_clip_seconds': MIN_CLIP_SECONDS, 'max_clip_seconds': MAX_CLIP_SECONDS, 'keep_original_audio': True,
                 'rights': {'usage': 'unknown'}, 'requirements': {'hard': [], 'preferences': [], 'exclusions': [], 'confirmed': False},
                 'criteria': {'base_version': 'content-v2', 'profiles': ['general'], 'user_revision': 1},
                 'analysis': {'overview': '', 'product_intent': {}, 'shot_boundaries': [],
@@ -200,8 +202,8 @@ def extract(args):
         if boundary_problem:
             uncertain.append(dict(segment, review_reason=boundary_problem))
             continue
-        if not 1.0 - 1e-9 <= b - a <= 3.0 + 1e-9 and not single_take_exception(task, segment):
-            manual_review.append(dict(segment, review_reason='候选时长不在默认1–3秒范围且未核实一镜到底展示例外，保留完整候选待审，禁止凑时长',
+        if not MIN_CLIP_SECONDS - 1e-9 <= b - a <= MAX_CLIP_SECONDS + 1e-9 and not single_take_exception(task, segment):
+            manual_review.append(dict(segment, review_reason='候选时长不在默认1–4秒范围且未核实一镜到底展示例外，保留完整候选待审，禁止凑时长',
                                       source=str(source), duration=b - a))
             continue
         # Content judgement problems never abort the whole batch: the clip is
@@ -241,8 +243,8 @@ def extract(args):
             if existing.name not in active_review and not existing.name.endswith('.partial.mp4'):
                 archive(existing)
                 existing.unlink()
-    save(root / 'manual-review.json', {'min_clip_seconds': 1.0, 'max_clip_seconds': 3.0,
-                                       'duration_policy': task.get('duration_policy', 'strict_1_3'), 'segments': manual_review})
+    save(root / 'manual-review.json', {'min_clip_seconds': MIN_CLIP_SECONDS, 'max_clip_seconds': MAX_CLIP_SECONDS,
+                                       'duration_policy': task.get('duration_policy', 'strict_1_4'), 'segments': manual_review})
     with (root / 'manual-review.csv').open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.DictWriter(stream, fieldnames=['id', 'source', 'start', 'end', 'duration', 'review_video', 'reason', 'review_reason'], extrasaction='ignore')
         writer.writeheader(); writer.writerows(manual_review)
@@ -279,8 +281,8 @@ def extract(args):
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', staged])
         info = probe(staged)
         portrait_geometry(info)
-        if not 1.0 - 1e-6 <= media_duration(info, 'video') <= 3.0 + 1e-6 and not single_take_exception(task, segment):
-            raise ValueError('实际输出不在默认1–3秒范围且无核实的一镜到底展示例外，停止交付并人工审核')
+        if not MIN_CLIP_SECONDS - 1e-6 <= media_duration(info, 'video') <= MAX_CLIP_SECONDS + 1e-6 and not single_take_exception(task, segment):
+            raise ValueError('实际输出不在默认1–4秒范围且无核实的一镜到底展示例外，停止交付并人工审核')
         if abs(media_duration(info, 'video') - (segment['end'] - segment['start'])) > .15:
             raise ValueError('输出片段时长不符')
         run(['ffmpeg', '-v', 'error', '-nostdin', '-i', staged, '-f', 'null', '-'])
@@ -537,7 +539,7 @@ def reselect_segments(args):
             problem = content_problem(updated, requirements) if task.get('standard') == 'content-v2' else None
             if problem:
                 raise ValueError(f'{sid}: {problem}')
-            if not 1.0 - 1e-9 <= b - a <= 3.0 + 1e-9 and not single_take_exception(task, updated):
+            if not MIN_CLIP_SECONDS - 1e-9 <= b - a <= MAX_CLIP_SECONDS + 1e-9 and not single_take_exception(task, updated):
                 print(f'{sid}: 新选区 {b - a:.3f} 秒超出默认范围且未核实一镜到底例外，将进入人工审核队列而不是自动 clips。')
         staged.append((segment, before, updated, reason.strip()))
     archive(task_path)

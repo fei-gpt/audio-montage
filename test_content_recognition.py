@@ -105,7 +105,8 @@ class ContentExtractionTest(unittest.TestCase):
         for row in m.read(root / 'extraction.json')['clips']:
             self.assertFalse(any(s['codec_type'] == 'audio' for s in m.probe(row['output'])['streams']))
 
-    def test_three_second_limit_routes_complete_long_action_to_review(self):
+    def test_four_second_limit_routes_complete_long_action_to_review(self):
+        m.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=180x320:r=30:d=6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', self.video])
         root = self.root / 'duration-task'
         c.prepare(Namespace(video=self.video, request='完整动作', output=root))
         path = root / 'task.json'
@@ -117,23 +118,23 @@ class ContentExtractionTest(unittest.TestCase):
         task['segments'] = [dict(id=str(i), start=0, end=end, facts='合成测试', reason='保留完整单元',
             decision='keep', boundary_reviewed=True, evidence=[evidence[0]],
             assessment={'base': {k: 'pass' for k in ['content_legibility', 'temporal_integrity', 'technical_usability', 'evidence_sufficiency']}, 'user': []})
-            for i, end in enumerate([1, 3, .9, 3.1])]
+            for i, end in enumerate([1, 3.7, 4, .9, 4.1])]
         m.save(path, task)
         c.extract(Namespace(task=path))
         manifest = m.read(root / 'extraction.json')
-        self.assertEqual(len(manifest['clips']), 2)
-        self.assertEqual([r['end'] for r in manifest['clips']], [1, 3])
+        self.assertEqual(len(manifest['clips']), 3)
+        self.assertEqual([r['end'] for r in manifest['clips']], [1, 3.7, 4])
         pending = m.read(root / 'manual-review.json')['segments']
         self.assertEqual(len(pending), 2)
-        self.assertEqual([r['end'] for r in pending], [.9, 3.1])
+        self.assertEqual([r['end'] for r in pending], [.9, 4.1])
         self.assertTrue(all(__import__('pathlib').Path(r['review_video']).is_file() for r in pending))
         self.assertEqual(m.read(root / 'progress.json')['status'], 'needs_manual_review')
 
         # Moving a previously accepted clip to manual review must retire its old output.
-        task['segments'][0]['end'] = 3.2
+        task['segments'][0]['end'] = 4.2
         m.save(path, task)
         c.extract(Namespace(task=path))
-        self.assertEqual(len(list((root / 'clips').glob('*.mp4'))), 1)
+        self.assertEqual(len(list((root / 'clips').glob('*.mp4'))), 2)
         self.assertTrue(list((root / 'clips/history').glob('*.mp4')))
 
 
@@ -142,18 +143,19 @@ class ShotContinuityExportTest(unittest.TestCase):
     tearDown = fixtures.PipelineTest.tearDown
 
     def task(self):
+        m.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=180x320:r=30:d=6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', self.video])
         root = self.root / 'continuity-task'
         c.prepare(Namespace(video=self.video, request='保留完整展示效果', output=root))
         path = root / 'task.json'
         task = m.read(path)
         task['rights']['usage'] = 'allowed'
-        task['analysis'].update(reviewed=True, coverage=[[0, 4]])
+        task['analysis'].update(reviewed=True, coverage=[[0, 6]])
         task['requirements']['confirmed'] = True
         evidence = m.read(next((root / 'evidence').glob('*/observation-*.json')))['evidence']
-        segment = dict(id='S1', start=0, end=4, facts='合成连续红色画面',
+        segment = dict(id='S1', start=0, end=5, facts='合成连续红色画面',
             reason='验证完整展示时长例外', decision='keep', boundary_reviewed=True,
-            evidence=evidence, display_intent='完整持续展示', duration_reason='保留4秒结果观察',
-            shot_review=dict(start=0, end=4, continuous=True, reviewed=True,
+            evidence=evidence, display_intent='完整持续展示', duration_reason='保留5秒结果观察',
+            shot_review=dict(start=0, end=6, continuous=True, reviewed=True,
                              method='synthetic continuous source', evidence=evidence),
             assessment={'base': {k: 'pass' for k in c.DIMENSIONS}, 'user': []})
         task['segments'] = [segment]
@@ -166,7 +168,7 @@ class ShotContinuityExportTest(unittest.TestCase):
         clips = m.read(root / 'extraction.json')['clips']
         self.assertEqual(len(clips), 1)
         self.assertTrue(clips[0]['single_take_exception'])
-        self.assertAlmostEqual(m.media_duration(m.probe(clips[0]['output']), 'video'), 4, delta=.05)
+        self.assertAlmostEqual(m.media_duration(m.probe(clips[0]['output']), 'video'), 5, delta=.05)
         segment['shot_review']['reviewed'] = False
         m.save(path, task)
         c.extract(Namespace(task=path))
@@ -178,7 +180,7 @@ class ShotContinuityExportTest(unittest.TestCase):
         root, path, task, segment = self.task()
         task['analysis']['shot_boundaries'] = [{'time': 2, 'type': 'hard_cut', 'reason': 'fixture cut'}]
         # Both default-length clips and purported continuity exceptions must be refused.
-        for end in [3, 4]:
+        for end in [4, 5]:
             segment['end'] = end
             m.save(path, task)
             c.extract(Namespace(task=path))
