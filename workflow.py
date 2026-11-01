@@ -11,7 +11,7 @@ def archive(path):
     if not path.exists():
         return
     folder = path.parent / 'history'
-    folder.mkdir(exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True)
     n = 1
     dest = folder / f'{path.stem}-{n}{path.suffix}'
     while dest.exists():

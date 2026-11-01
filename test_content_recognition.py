@@ -63,9 +63,20 @@ class ContentExtractionTest(unittest.TestCase):
             elif kind == 'condition': bad['segments'][0]['assessment']['user'][0]['result'] = 'fail'
             else: bad['segments'][0]['assessment']['base']['evidence_sufficiency'] = 'unknown'
             m.save(path, bad)
-            with self.assertRaises(ValueError), patch.object(c, 'run') as runner:
-                c.extract(Namespace(task=path))
-            runner.assert_not_called()
+            if kind == 'range':
+                # A structurally broken task is still refused before any encoding.
+                with self.assertRaises(ValueError), patch.object(c, 'run') as runner:
+                    c.extract(Namespace(task=path))
+                runner.assert_not_called()
+                continue
+            # Content problems hold back only that clip instead of failing the batch.
+            c.extract(Namespace(task=path))
+            self.assertEqual([row['id'] for row in m.read(root / 'extraction.json')['clips']], ['1'])
+            pending = m.read(root / 'uncertain-review.json')['segments']
+            self.assertEqual([row['id'] for row in pending], ['0'])
+            expected = '用户硬条件 product 未通过' if kind == 'condition' else '观察证据不足'
+            self.assertIn(expected, pending[0]['review_reason'])
+            self.assertEqual(m.read(root / 'progress.json')['status'], 'needs_manual_review')
         m.save(path, task)
         real_run = c.run
         calls = []
@@ -124,3 +135,58 @@ class ContentExtractionTest(unittest.TestCase):
         c.extract(Namespace(task=path))
         self.assertEqual(len(list((root / 'clips').glob('*.mp4'))), 1)
         self.assertTrue(list((root / 'clips/history').glob('*.mp4')))
+
+
+class ShotContinuityExportTest(unittest.TestCase):
+    setUp = fixtures.PipelineTest.setUp
+    tearDown = fixtures.PipelineTest.tearDown
+
+    def task(self):
+        root = self.root / 'continuity-task'
+        c.prepare(Namespace(video=self.video, request='保留完整展示效果', output=root))
+        path = root / 'task.json'
+        task = m.read(path)
+        task['rights']['usage'] = 'allowed'
+        task['analysis'].update(reviewed=True, coverage=[[0, 4]])
+        task['requirements']['confirmed'] = True
+        evidence = m.read(next((root / 'evidence').glob('*/observation-*.json')))['evidence']
+        segment = dict(id='S1', start=0, end=4, facts='合成连续红色画面',
+            reason='验证完整展示时长例外', decision='keep', boundary_reviewed=True,
+            evidence=evidence, display_intent='完整持续展示', duration_reason='保留4秒结果观察',
+            shot_review=dict(start=0, end=4, continuous=True, reviewed=True,
+                             method='synthetic continuous source', evidence=evidence),
+            assessment={'base': {k: 'pass' for k in c.DIMENSIONS}, 'user': []})
+        task['segments'] = [segment]
+        return root, path, task, segment
+
+    def test_verified_single_take_exports_full_length_and_requires_evidence(self):
+        root, path, task, segment = self.task()
+        m.save(path, task)
+        c.extract(Namespace(task=path))
+        clips = m.read(root / 'extraction.json')['clips']
+        self.assertEqual(len(clips), 1)
+        self.assertTrue(clips[0]['single_take_exception'])
+        self.assertAlmostEqual(m.media_duration(m.probe(clips[0]['output']), 'video'), 4, delta=.05)
+        segment['shot_review']['reviewed'] = False
+        m.save(path, task)
+        c.extract(Namespace(task=path))
+        self.assertEqual(m.read(root / 'extraction.json')['clips'], [])
+        self.assertEqual(len(m.read(root / 'manual-review.json')['segments']), 1)
+        self.assertEqual(len(list((root / 'clips').glob('*.mp4'))), 0)
+
+    def test_recorded_cut_blocks_short_and_long_exports_but_allows_cut_at_endpoint(self):
+        root, path, task, segment = self.task()
+        task['analysis']['shot_boundaries'] = [{'time': 2, 'type': 'hard_cut', 'reason': 'fixture cut'}]
+        # Both default-length clips and purported continuity exceptions must be refused.
+        for end in [3, 4]:
+            segment['end'] = end
+            m.save(path, task)
+            c.extract(Namespace(task=path))
+            self.assertEqual(m.read(root / 'extraction.json')['clips'], [])
+            pending = m.read(root / 'uncertain-review.json')['segments']
+            self.assertIn('切镜', pending[0]['review_reason'])
+        segment['end'] = 2
+        segment['evidence'] = [e for e in segment['evidence'] if e['time'] <= 2]
+        m.save(path, task)
+        c.extract(Namespace(task=path))
+        self.assertEqual(len(m.read(root / 'extraction.json')['clips']), 1)

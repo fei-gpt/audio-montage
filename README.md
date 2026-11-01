@@ -175,7 +175,7 @@ my-project/
 ./run.sh index-library --library /绝对路径/素材库 --database ./library/index.sqlite --window 6
 ```
 
-首次扫描自动检测镜头变化，并把长镜头继续按最多 6 秒窗口划分，提取每片段前、中、后三帧。只保存时间范围，不改动原视频。再次扫描读取内容指纹，相同内容即使改名也复用已有片段。已变更的原视频不会继续使用旧标注。
+首次扫描自动检测镜头变化，并把长镜头继续按最多 6 秒窗口划分，提取每片段前、中、后三帧。这些是索引观察窗口，不是最终导出镜头，也不能据此把完整展示切碎；有效选区另按 CONTENT_STANDARD.md 核实。只保存时间范围，不改动原视频。再次扫描读取内容指纹，相同内容即使改名也复用已有片段。已变更的原视频不会继续使用旧标注。
 
 输出 library/index.label-queue.json：填写各片段 labels.description、subject、action、scene、tags，看过画面后将 reviewed 设为 true，再导入：
 
@@ -253,6 +253,9 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 
 真实素材接入后优先验证配音术语、动作边界、画面裁切与检索命中率，再决定是否需要视觉自动标注或向量检索。当前不需要搭建网站或部署数据库服务。
 
+离线回归不访问网络、不调用付费服务：整片识别与视觉 API 链路用合成 9:16 视频和假 HTTP 服务跑通
+解析要求→批次候选→密集复核→分割导出→人工回填→重新选区，帧与片段都由本机 FFmpeg 真实生成。
+
 本次完整测试包括英文、西语及中文实际模型推理、跨语言标签和重音检索、字幕分词、原稿对比、素材缓存修复、候选回填与版本拦截、MP4 编解码、草稿三轨导出及库内回读。详情见 verification.json。测试音频位于 fixtures/；它们是本地合成的语音，非用户录音。
 
 提供真实素材的方法见 INTAKE.md。真实素材的音画匹配精度仍需接入后实测，不能由这些程序测试替代。
@@ -282,8 +285,8 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 生成失败保留旧文件。理解结果导入也保存记录和旧语义片段快照。
 统一入口保留方案应用和实际审核阶段，不会自动把 reviewed 改为 true。
 
-本次改动按用户要求未运行测试或媒体验证。当前仍使用原来的两轮视频编码，
-尚未改变补尾帧与时长处理；来源权限和自由文本限制仍需实际审核。
+渲染与草稿导出前会再次校验选片、产品身份和时长；来源权限与自由文本限制只检查字段
+是否齐备，授权事实本身仍需有依据地录入和审核。
 
 ## 新增素材管理能力
 
@@ -292,7 +295,8 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 
 渲染改为每段编码一次，末段补足统一帧网格，最终合配音时复制视频流；
 保留原声的混音逻辑继续使用原流程。最终视频仍执行原有解码与时长检查。
-本次未实际运行新路径，帧边界、编码拼接和音画同步尚未经媒体验证。
+离线回归用合成媒体覆盖了帧边界、编码拼接、原声混音与总时长校验；
+真实素材的帧网格对齐和音画同步仍需接入后抽查。
 
 以上实现取代前文“仍使用两轮编码”的旧说明。来源与自由文本限制现在参与候选
 提示和正式输出审核；具体授权事实仍需有依据的录入。
@@ -312,13 +316,31 @@ MONTAGE_TEST_MODEL="$PWD/models/tiny" .venv/bin/python -m unittest discover -s .
 
 ## 内容识别与多片段提取
 
+执行顺序：先理解产品/内容的展示意图，再核实硬切、跳剪与转场；在单个物理镜头内选材，最后检查默认1–3秒、一镜到底完整展示例外及实际导出边界。同功能的多个镜头可关联，自动片段不可跨真实切镜；展示价值与性能真实性分开判断。详见内容识别标准。
+
 核心入口 `recognize-content` 为整段视频准备识别任务，视觉助手按
-[内容识别标准](CONTENT_STANDARD.md)判断有效/无效/待确认区间，再用
+[内容识别标准](CONTENT_STANDARD.md)与[执行及独立复核规范](CONTENT_REVIEW.md)判断有效/无效/待确认区间，再用
 `extract-segments` 导出多个独立素材。带货角色、画面事实、技术质量和本次需求分开记录。
 WorkBuddy 项目技能位于 `.codebuddy/skills/content-recognition/`。
 此流程不自动调用视觉 API，需助手实际观察证据。
 
+自动片段默认1–3秒；核实为一镜到底且需完整展示效果时可超出范围，填写连续性证据与例外理由。其他越界完整候选不截断、不补长、不变速，
+单独导出到 `manual-review-clips/` 并写入 `manual-review.json`；内容或用户条件未确认的候选
+写入 `uncertain-review.json`。两者都让 `progress.json` 保持 `needs_manual_review`。
+
+人工处理待审项后可回填或重新选区，两条命令都保留历史并自动重新导出：
+
+```bash
+./run.sh review-segments --task ./work/content-task/task.json --decisions ./decisions.json --reviewer me
+./run.sh reselect-segments --task ./work/content-task/task.json --selections ./selections.json
+```
+
+标记 keep 前会逐项校验用户硬条件，未知结果不会被当成通过。旧 task.json 归档到任务目录
+`history/`，改动记录追加到 `review-log.json`。字段说明见 CONTENT_STANDARD.md。
+
 ## 可选视觉 API
 
 `analyze-content-api` 支持 DeepSeek、GPT 和 CC Switch 暴露的 OpenAI 兼容图片接口，
-自动解析要求、提出候选并密集复核。配置、费用开关和能力边界见 [VISION_API.md](VISION_API.md)。
+自动解析要求、提出候选并密集复核。密集复核可在**已观察窗口内**修正候选边界，
+原区间写入 `original_start`/`boundary_history`；标 keep 前会逐项核对用户硬条件，
+未知结果进待审而不是等到导出才整批失败。配置、费用开关和能力边界见 [VISION_API.md](VISION_API.md)。

@@ -12,6 +12,7 @@
 | 已有配音取时间 | elevenlabs --mode transcribe/align | 音频；align 另需原稿 → 时间轴 | 外部 API 未真实验证；本地 transcribe 可替代 |
 | 建长期素材库 | index-library → prepare-understanding → observe-media → import-understanding | 素材 → 带证据的语义片段 | 无独立视觉模型调用；助手要看图片并填写记录 |
 | 检索及自动选片 | search/candidates/choose 或 auto-plan/apply-plan | 已复核标签、画面需求 → 选片方案 | 词项检索，不是向量语义检索；缺素材留空 |
+| 从整片选材 | recognize-content → extract-segments（可选 analyze-content-api） | 完整视频、剪辑要求 → 多个独立 MP4（默认1–3秒，核实的一镜到底完整展示可例外） | 视觉判断需助手或视觉 API；越界与未确认候选交人工 |
 | 看素材、记录反馈 | contact-sheet / selection-feedback / similar-media | 索引 → 联系表、反馈、相似提示 | 相似检测只做三帧提示，不自动合并 |
 | 剪映时间线各段导出 | export-timeline-segments | 已有剪映草稿 → 每段独立 MP4 | Windows + 匹配 jy-draftc/剪映；真实引擎未验证 |
 | 交给剪映继续编辑 | export-draft | 本项目选片 → 可编辑草稿包 | 可选；不是“逐片段导出”，Mac 打开兼容性未验证 |
@@ -58,9 +59,18 @@ WorkBuddy 实际运行、本地 Whisper 模型推理。
 
 recognize-content 创建自然语言任务和概览证据；视觉助手按 CONTENT_STANDARD.md
 理解整片、核实多个候选区间；extract-segments 输出独立 MP4、CSV、JSON 与进度。
-无需用户预先指定裁切时间，不依赖配音或剪映。当前视觉判断由助手完成，尚未接视觉 API。
-content-v2 分开记录通用、用途与用户标准，提取前检查硬条件和证据状态。
+无需用户预先指定裁切时间，不依赖配音或剪映。当前视觉判断由助手完成；
+也可选用 analyze-content-api 走 OpenAI 兼容图片接口（需 --allow-paid）。
+content-v2 分开记录通用、用途与用户标准，标 keep 前逐项检查硬条件与证据状态，
+未知结果进待审而不是等到导出才整批失败。
 
-本次回归 26 项：22 项通过、4 项因模型/依赖缺失跳过。
-新增实测覆盖合成视频画面区间正确性、时长、原声/静音、模拟中断续跑及硬条件拦截。
-这不代表真实镜头语义或剪映原生引擎已通过验收。
+时长越界候选单独进入 manual-review-clips 与 manual-review.json；内容或条件未确认的候选
+进入 uncertain-review.json。人工核对后用 review-segments 回填结论、用 reselect-segments
+重新选区，两条命令都保留历史（history/ 与 review-log.json）并自动重新导出。
+视觉 API 的密集复核可在已观察窗口内修正边界，原区间写入 original_start/boundary_history。
+
+本次离线回归 44 项：40 项通过、4 项跳过（3 项需本地 ASR 模型，1 项需 pyJianYingDraft）。
+新增覆盖：模拟兼容 API 的完整链路（解析要求→批次候选→密集复核→边界修正与越界拒绝→
+分割导出→人工回填→重新选区）、硬条件未确认时的 keep 拦截、时长越界转待审、
+模拟中断续跑与旧输出归档。HTTP 边界用假服务替代，真实服务、真实镜头语义与
+剪映原生引擎仍未验收。

@@ -190,7 +190,7 @@ def init(args):
                   'language': getattr(args, 'language', 'auto'), 'fit': 'contain',
                   'keep_original_audio': getattr(args, 'keep_original_audio', False)})
     for folder in ['audio', 'plans', 'out', 'qa']:
-        (root / folder).mkdir(exist_ok=True)
+        (root / folder).mkdir(parents=True, exist_ok=True)
     print(config)
 
 
