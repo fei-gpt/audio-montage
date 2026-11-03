@@ -848,6 +848,8 @@ def main():
     content_recognition.register(sub)
     import vision_api
     vision_api.register(sub)
+    import hypit_adapter
+    hypit_adapter.register(sub)
     args = parser.parse_args()
     try:
         args.func(args)

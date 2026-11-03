@@ -338,6 +338,20 @@ WorkBuddy 项目技能位于 `.codebuddy/skills/content-recognition/`。
 标记 keep 前会逐项校验用户硬条件，未知结果不会被当成通过。旧 task.json 归档到任务目录
 `history/`，改动记录追加到 `review-log.json`。字段说明见 CONTENT_STANDARD.md。
 
+## 可选 Hypit 参考视频分析
+
+如果本机已安装 Hypit CLI，可用 `hypit-analyze` 将 Hypit 的本地媒体分析接入本项目：
+
+```bash
+./run.sh hypit-analyze ./reference.mp4 --output ./work/hypit-reference
+```
+
+也可以通过 `--hypit` 或 `HYPIT_BIN` 指定 Hypit 可执行文件路径。该命令保存
+`probe.json`、机械变化候选 `boundaries.json`、带时间码的 `frames/`、概览网格
+`overview.jpg` 和分页时间网格 `tiles/`，并生成 `manifest.json`。Hypit 的机械边界只是
+需要人工或视觉助手复核的变化候选，不会被自动当成语义镜头切点；本命令不调用 Hypit
+Runtime，也不会产生生成费用。
+
 ## 可选视觉 API
 
 `analyze-content-api` 支持 DeepSeek、GPT 和 CC Switch 暴露的 OpenAI 兼容图片接口，
