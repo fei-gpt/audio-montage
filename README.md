@@ -1,5 +1,7 @@
 # 配音驱动混剪与素材工作流
 
+新增：[多产品、多账号本地工作台](WORKBENCH.md)，支持资料接入、账号素材库、后台识别、审核与分段导出。已提供 Hypit 0.3.1 安装脚本和 DeepSeek 视觉默认配置；[验证范围](WORKBENCH_VALIDATION.md)。
+
 **先看 [功能总览与 WorkBuddy 接续说明](CAPABILITIES.md)**：按目标选择功能、输入和输出，区分模拟验证与真实服务验收。
 
 独立功能插件：[剪映时间线逐片段导出](JIANYING_SEGMENTS.md)，WorkBuddy 入口位于 `.codebuddy/skills/jianying-segment-export/`。
@@ -8,7 +10,7 @@
 
 本工具实现配音驱动的混剪流程。素材处理和检索在本地执行，不发送视频、不调用付费 API。显式执行 download-model 时会联网下载模型。建议使用已验证的 Python 3.12，以及 FFmpeg 和 ffprobe；完整依赖见 requirements.txt。
 
-**换电脑操作先看 [MIGRATION.md](MIGRATION.md)**：包含 macOS/Linux 与 Windows 的安装和启动方式。本地完整 UI 暂缓，目前通过命令行执行。
+**换电脑操作先看 [MIGRATION.md](MIGRATION.md)**：包含 macOS/Linux 与 Windows 的安装和启动方式。本地产品与账号工作台已提供，见 [WORKBENCH.md](WORKBENCH.md)。命令行工作流继续保留。
 
 **固定规则：只使用 9:16 视频，输出也只允许 9:16。** 横屏、方形、近似但非精确 9:16 等素材直接排除，原因写入索引报告 excluded；不会通过裁剪、补边或拉伸接纳。判定使用实际显示比例，计算像素比例（SAR）和旋转信息。分辨率可以不同，例如 1080×1920、720×1280；内容严格按原显示比例缩放。无法明确判定的视频排除。
 

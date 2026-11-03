@@ -39,3 +39,12 @@ qa/
 **/understanding/imports/
 **/elevenlabs-cache/
 **/vision-cache/
+
+# Local workbench catalog, reference documents, media evidence and optional dependencies
+.workbench-data/
+.workbench-deps/
+
+.workbench-data-qa/
+
+.hypit-runtime/
+.env.workbench

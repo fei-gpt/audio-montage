@@ -6,6 +6,25 @@ from unittest.mock import patch
 import vision_api as v
 
 class VisionAPITest(unittest.TestCase):
+    def test_deepseek_visual_payload_and_explicit_model(self):
+        import os, io, base64
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'DEEPSEEK_API_KEY':'test-only'}):
+            root=Path(tmp);image=root/'frame.jpg';image.write_bytes(b'image-test')
+            config={'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key_env':'DEEPSEEK_API_KEY'}
+            raw={'choices':[{'finish_reason':'stop','message':{'content':'{"facts":"test"}'}}]}
+            with patch('urllib.request.build_opener') as network:
+                network.return_value.open.return_value=io.BytesIO(json.dumps(raw).encode())
+                self.assertEqual(v.call(config,'Return JSON',[{'time':1,'path':str(image)}],root,True),{'facts':'test'})
+                request=network.return_value.open.call_args.args[0];payload=json.loads(request.data)
+                self.assertEqual(request.full_url,'https://api.deepseek.com/chat/completions')
+                self.assertEqual(payload['response_format'],{'type':'json_object'})
+                self.assertTrue(payload['messages'][0]['content'][-1]['image_url']['url'].startswith('data:image/jpeg;base64,'))
+                self.assertEqual(request.get_header('Authorization'),'Bearer test-only')
+            with patch('urllib.request.build_opener') as network:
+                with self.assertRaisesRegex(ValueError,'deepseek-flash'):
+                    v.call(dict(config,model='deepseek-reasoner'),'JSON',[],root,True)
+                network.assert_not_called()
+
     def test_paid_gate_and_endpoint_restriction(self):
         with tempfile.TemporaryDirectory() as tmp, patch('urllib.request.build_opener') as network:
             for base in ['https://example.com/v1', 'http://remote.example/v1']:

@@ -15,7 +15,8 @@ from pathlib import Path
 
 
 def _hypit_command(value):
-    candidate = value or os.environ.get('HYPIT_BIN') or 'hypit'
+    local = Path(__file__).resolve().parent / '.hypit-runtime' / 'node_modules' / '.bin' / ('hypit.cmd' if os.name == 'nt' else 'hypit')
+    candidate = value or os.environ.get('HYPIT_BIN') or (str(local) if local.is_file() else 'hypit')
     if Path(candidate).is_file():
         return str(Path(candidate).resolve())
     resolved = shutil.which(candidate)

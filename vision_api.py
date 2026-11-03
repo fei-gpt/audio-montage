@@ -13,7 +13,14 @@ from elevenlabs_adapter import NoRedirect
 from content_recognition import content_problem, requirement_match
 
 
+def validate_model(base_url, model):
+    # Official endpoint only: relays can expose their own model aliases.
+    if urlparse(base_url).hostname == 'api.deepseek.com' and model not in {'deepseek-flash', 'deepseek-v4-flash-vision-exp'}:
+        raise ValueError('DeepSeek 官方视觉接入请选择 deepseek-flash；不将其他模型名视为支持图片，也不自动换模型')
+
+
 def call(config, prompt, evidence, cache, allow_paid):
+    validate_model(config['base_url'], config['model'])
     endpoint = config['base_url'].rstrip('/') + '/chat/completions'
     parsed = urlparse(endpoint)
     if parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1', '::1'}):
@@ -42,8 +49,13 @@ def call(config, prompt, evidence, cache, allow_paid):
         content.extend([{'type': 'text', 'text': f"原视频时间 {e['time']:.6f} 秒"},
                         {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(Path(e['path']).read_bytes()).decode()}}])
     payload = {'model': config['model'], 'messages': [{'role': 'user', 'content': content}]}
+    if parsed.hostname == 'api.deepseek.com':
+        payload['response_format'] = {'type': 'json_object'}
+    body = json.dumps(payload).encode()
+    if parsed.hostname == 'api.deepseek.com' and (len(evidence) > 600 or len(body) > 48 * 1024 * 1024):
+        raise ValueError('超过 DeepSeek 图片数量或48MiB请求限制，未发送请求，请减少抽帧数量')
     save(receipt, {'status': 'attempted', 'request_hash': digest})
-    req = urllib.request.Request(endpoint, data=json.dumps(payload).encode(),
+    req = urllib.request.Request(endpoint, data=body,
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
     try:
         with urllib.request.build_opener(NoRedirect).open(req, timeout=180) as response:
