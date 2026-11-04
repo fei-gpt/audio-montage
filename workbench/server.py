@@ -30,7 +30,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self,method):
         try:
             self.guard();url=urllib.parse.urlsplit(self.path);path=url.path
-            media=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/media/(asset|export)/([a-f0-9-]+)',path)
+            media=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/media/(asset|export|edit)/([a-f0-9-]+)',path)
             if media and method=='GET':
                 p,w,k,ident=media.groups();sig=urllib.parse.parse_qs(url.query).get('sig',[''])[0];return self.serve_file(self.app.media(p,w,k,ident,sig))
             if not path.startswith('/api/'):
@@ -67,6 +67,11 @@ class Handler(BaseHTTPRequestHandler):
                 for w in p['workspaces']:
                     w.update(libraries=s.all('library',w['id']),assets=s.all('asset',w['id']),shots=s.all('shot',w['id']),jobs=s.all('job',w['id']),exports=s.all('export',w['id']))
                     w['assets']=app.visible_assets(w['id'])
+                    w['editing_batches']=app.editing.list(p['id'],w['id'])
+                    for batch in w['editing_batches']:
+                        for task in batch['tasks']:
+                            for key,index in [('preview','0'),('output','1')]:
+                                if task.get(key):task[key]['media_url']=self.media_url(p['id'],w['id'],'edit',task['id']+'-'+index)
                     for a in w['assets']:a['media_url']=self.media_url(p['id'],w['id'],'asset',a['id'])
                     for e in w['exports']:
                         for i,f in enumerate(e['files']):f['media_url']=self.media_url(p['id'],w['id'],'export',e['id']+'-'+str(i))
@@ -95,6 +100,14 @@ class Handler(BaseHTTPRequestHandler):
         m=re.fullmatch(r'workspaces/([a-f0-9]+)(?:/(.*))?',tail or '')
         if not m:raise Problem('接口不存在',404)
         w,rest=m.groups();ws=app.workspace(p,w)
+        if rest=='editing/batches':
+            if method=='POST':return app.editing.create(p,w,b)
+            if method=='GET':return app.editing.list(p,w)
+        editing=re.fullmatch(r'editing/batches/([a-f0-9]{32})(?:/([a-z-]+))?',rest or '')
+        if editing:
+            bid,operation=editing.groups()
+            if method=='GET' and operation is None:return dict(app.editing.batch(p,w,bid),tasks=app.editing.tasks(w,bid))
+            if method=='POST' and operation:return app.editing.action(p,w,bid,operation,b)
         if not rest and method=='PATCH':
             if b.get('name'):ws['name']=str(b['name']).strip()[:100]
             if b.get('assigned') is True:ws['assigned']=True

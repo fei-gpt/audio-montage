@@ -115,6 +115,8 @@ class Workbench:
         for j in self.store.all('job'):
             if j['status'] in {'running','queued'}:
                 j.update(status='interrupted',stage='服务重启，已保留进度；可继续任务'); self.store.put('job',j['scope'],j)
+        from workbench.editing import Editing
+        self.editing=Editing(self)
     def product(self,p):
         product=self.store.get('product',p,'root')
         owner=product;seen={p}
@@ -590,6 +592,14 @@ class Workbench:
             s.setdefault('selection_history',[]).append({'start':s['start'],'end':s['end'],'at':now(),'note':str(body.get('note',''))})
             s.update(start=a,end=b,human_confirmed=False,review_decision='uncertain')
         if 'facts' in body:s['facts']=str(body['facts'])[:10000]
+        if 'safe_trim_ranges' in body:
+            ranges=body['safe_trim_ranges']
+            if not isinstance(ranges,list) or len(ranges)>30:raise Problem('安全裁切区间格式无效')
+            for r in ranges:
+                if not isinstance(r,dict) or not all(type(r.get(k)) in (int,float) for k in ('start','end')) or not s['start']<=r['start']<r['end']<=s['end']:
+                    raise Problem('安全裁切区间必须位于当前已确认选区内')
+            if ranges and (decision!='keep' or body.get('content_confirmed') is not True):raise Problem('安全裁切范围需实际核对后确认保留')
+            s['safe_trim_ranges']=ranges
         s.update(review_decision=decision,review_note=str(body.get('note',''))[:5000],reviewed_at=now())
         if decision=='keep' and body.get('content_confirmed') is not True:raise Problem('保留前需确认实际核对内容、切镜及展示效果')
         s['human_confirmed']=decision=='keep'
@@ -662,6 +672,7 @@ class Workbench:
     def media(self,p,w,kind,ident,sig):
         self.workspace(p,w)
         if not hmac.compare_digest(sig,self.media_signature(p,w,kind,ident)):raise Problem('无效媒体签名',403)
+        if kind=='edit':return self.editing.media(p,w,ident)
         if kind=='asset':return self.asset_path(w,ident)
         if kind=='export':
             record_id,index=ident.rsplit('-',1);e=self.store.get('export',record_id,w);path=Path(e['files'][int(index)]['path']).resolve()
