@@ -96,9 +96,9 @@ def observe(args):
     evidence = []
     for t in sample_times(start,end,args.every):
         dest = folder / f'{t:.6f}.jpg'
-        if not dest.exists():
-            run(['ffmpeg', '-v', 'error', '-nostdin', '-ss', t, '-i', path,
-                 '-frames:v', '1', '-vf', 'scale=720:-2', dest])
+        if not dest.is_file() or not dest.stat().st_size:
+            run(['ffmpeg', '-v', 'error', '-nostdin', '-y', '-ss', t, '-i', path,
+                 '-frames:v', '1', '-vf', 'scale=720:-2:out_range=full,format=yuvj420p', dest])
         if not dest.is_file() or not dest.stat().st_size:raise ValueError(f'取帧未生成有效图片：{t:.6f}秒')
         evidence.append({'time': t, 'path': str(dest)})
     manifest = folder / f'observation-{start:.6f}-{end:.6f}-{args.every:.6f}.json'

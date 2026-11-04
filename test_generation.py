@@ -12,7 +12,7 @@ class GenerationTest(unittest.TestCase):
     setUp=fixtures.EditingTest.setUp
     tearDown=fixtures.EditingTest.tearDown
     proposal=fixtures.EditingTest.proposal
-    def make(self,provider='deepseek'):
+    def make(self,provider='codex'):
         self.app.generation.settings({'voice_id':'test-voice','elevenlabs_api_key':'test-secret'})
         return self.app.generation.create(self.p['id'],self.w['id'],{'brief':'Show the red toy','provider':provider,'rights_allowed':True,'language':'en'})
     def script(self):return {'ai_copy':'Look at this toy.','jimeng_prompt':'Vertical product introduction with synchronized speech.','continuation_copy':'Show red toy.','visual_requirements':'red toy demonstration','language':'en'}
@@ -29,7 +29,7 @@ class GenerationTest(unittest.TestCase):
         return '{}'
     def test_intro_confirmation_gates_tts_and_handoff_reuses_timing(self):
         g=self.make()
-        with patch('vision_api.call',return_value=self.script()),patch.object(self.app.generation,'command',side_effect=self.cli_success),patch('elevenlabs_adapter.request') as tts:
+        with patch('codex_vision.call',return_value=self.script()),patch.object(self.app.generation,'command',side_effect=self.cli_success),patch('elevenlabs_adapter.request') as tts:
             self.action(g,'start',{'allow_paid':True});tts.assert_not_called()
         g=self.get(g);self.assertEqual(g['status'],'awaiting_intro_review',g.get('error'));self.assertEqual(g['submit_id'],'external-123')
         with self.assertRaises(Problem):self.app.generation.action(self.p['id'],self.w['id'],g['id'],'approve-intro',{'content_confirmed':True,'intro_sha256':'wrong','allow_paid':True})
@@ -55,7 +55,7 @@ class GenerationTest(unittest.TestCase):
             if '-h' in [str(x) for x in argv]:return 'help'
             if argv[1]=='text2video':return '{"submit_id":"external-abc","gen_status":"querying"}'
             return '{"gen_status":"querying"}'
-        with patch('vision_api.call',return_value=self.script()),patch.object(self.app.generation,'command',side_effect=pending):
+        with patch('codex_vision.call',return_value=self.script()),patch.object(self.app.generation,'command',side_effect=pending):
             self.action(g,'start',{'allow_paid':True});self.action(g,'poll',{})
         self.assertEqual(calls.count('text2video'),2) # help + one paid submit only
         self.assertEqual(self.get(g)['status'],'video_pending')
@@ -63,7 +63,7 @@ class GenerationTest(unittest.TestCase):
         def lost(argv,folder,*args):
             if argv[1]=='text2video' and '-h' not in argv:raise ValueError('connection lost after submit')
             return 'help'
-        with patch('vision_api.call',return_value=self.script()),patch.object(self.app.generation,'command',side_effect=lost):self.action(other,'start',{'allow_paid':True})
+        with patch('codex_vision.call',return_value=self.script()),patch.object(self.app.generation,'command',side_effect=lost):self.action(other,'start',{'allow_paid':True})
         with patch.object(self.app.generation,'command',side_effect=AssertionError('must not resubmit')):self.action(other,'start',{'allow_paid':True})
         self.assertIn('结果不明',self.get(other)['error'])
     def test_settings_are_private_scope_and_unpaid_actions_rejected(self):
@@ -71,12 +71,11 @@ class GenerationTest(unittest.TestCase):
         with self.assertRaises(Problem):self.app.generation.get(self.p['id'],self.w2['id'],g['id'])
         with self.assertRaises(Problem):self.app.generation.action(self.p['id'],self.w['id'],g['id'],'start',{})
     def test_codex_reuses_saved_structured_output(self):
-        g=self.make('codex');calls=[]
-        def codex(argv,folder,*args):
-            calls.append(argv);Path(folder,'script.json').write_text(json.dumps(self.script()),encoding='utf-8');return ''
-        with patch.object(self.app.generation,'command',side_effect=codex):
+        g=self.make('codex')
+        with patch('codex_vision.call',return_value=self.script()) as codex:
             a=self.app.generation.scripts(g,True);b=self.app.generation.scripts(g,True)
-        self.assertEqual(a,b);self.assertEqual(len(calls),1);self.assertIn('read-only',calls[0]);self.assertIn('--output-schema',calls[0])
+        self.assertEqual(a,b);self.assertEqual(codex.call_count,1)
+        self.assertEqual(codex.call_args.args[0]['model'],'gpt-6-luna')
     def test_http_binary_upload_generation_routes_and_private_settings(self):
         from workbench.server import make_server
         server=make_server(self.root/'http-state',0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()

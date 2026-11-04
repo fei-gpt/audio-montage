@@ -164,8 +164,14 @@ class Workbench:
         from vision_api import execution_config
         if execution_config.get():return dict(execution_config.get())
         path=self.root/'vision-config.json'
-        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key_env':'DEEPSEEK_API_KEY'}
+        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'provider':'codex','base_url':'codex://local','model':'gpt-6-luna','codex_bin':shutil.which('codex') or 'codex'}
     def set_config(self,cfg):
+        if cfg.get('provider')=='codex':
+            model=cfg.get('model','gpt-6-luna')
+            if model!='gpt-6-luna':raise Problem('当前Codex处理固定使用gpt-6-luna，不自动换模型')
+            from montage import save
+            save(self.root/'vision-config.json',{'provider':'codex','base_url':'codex://local','model':model,'codex_bin':shutil.which('codex') or 'codex'})
+            return self.status()
         url=str(cfg.get('base_url','')).rstrip('/');u=urllib.parse.urlsplit(url)
         if u.scheme!='https' and not(u.scheme=='http' and u.hostname in {'127.0.0.1','localhost','::1'}): raise Problem('模型地址须为HTTPS，本机转接允许HTTP')
         if u.username or u.password or u.query or u.fragment: raise Problem('模型地址不可携带密钥或查询参数')
@@ -370,6 +376,8 @@ class Workbench:
                 for a in self.store.all('asset',w):c.execute('INSERT OR REPLACE INTO media VALUES(?,?,?,?,?)',(a['id'],a['sha256'],a['path'],a['kind'],int(a['available'])))
         return {'assets':found,'errors':errors,'count':len(found)}
     def create_job(self,p,w,kind,allow_paid=False,extra='',rights=False,asset_ids=None,provider=None,model=None):
+        default_config=self.config()
+        if provider is None and default_config.get('provider')=='codex':provider='codex';model=default_config['model']
         self.product(p)
         if kind=='organize':
             ws=self.workspace(p,w)
@@ -397,6 +405,7 @@ class Workbench:
         scope=w or p;j=self.store.get('job',jid,scope)
         if j['product_id']!=p:raise Problem('任务不属于当前产品',404)
         if j['status'] in {'running','queued'}:return j
+        if self.config().get('provider')=='codex':j['analysis_config']=dict(self.config())
         if w and not self.workspace(p,w)['assigned']:raise Problem('请先分配账号',409)
         if j.get('analysis_config',{}).get('provider')=='codex':
             if not shutil.which(j['analysis_config'].get('codex_bin','codex')):raise Problem('请先安装Codex CLI',409)
@@ -516,6 +525,12 @@ class Workbench:
         from vision_api import analyze
         from understanding import observe
         w=j['workspace_id'];source=self.asset_path(w,a['id']);folder=self.wroot(w)/'tasks'/j['id']/a['id'];folder.mkdir(parents=True,exist_ok=True)
+        if self.config().get('provider')=='codex':
+            for receipt in (folder/'vision-cache').glob('*.attempt.json'):
+                if receipt.name.startswith('codex-'):continue
+                stem=receipt.name[:-len('.attempt.json')]
+                if not (receipt.parent/(stem+'.raw.json')).exists() and not (receipt.parent/(stem+'.json')).exists():
+                    raise Problem('历史API请求结果不明，已隔离；切换Codex也不重复分析该请求，需先核查原服务端记录')
         request=RULES+'\n产品参考资料（宣传主张不能当视频实测事实）：'+json.dumps(product.get('profile',{}),ensure_ascii=False)+'\n用户补充：'+product.get('extra_request','')+'\n'+j.get('extra_request','')
         from video_document import load_document, write_document, VISUAL_PROMPT
         from asset_index import digest_json

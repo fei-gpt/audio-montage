@@ -12,7 +12,7 @@ function bindGeneration(){
 }
 function newGeneration(){
   dialog('新建AI视频',`<form id="generationCreate"><p class="meta-box">使用 ${esc(P().name)} / ${esc(W().name)} 的共用产品知识和已确认素材库。</p><label class="field"><span>视频要求与文案规则</span><textarea name="brief" required placeholder="说明受众、开头场景、卖点与实拍续接要求" style="min-height:140px"></textarea></label>
-  <label class="field"><span>两层文案由谁生成</span><select name="provider"><option value="deepseek">DeepSeek API（复用识别服务配置）</option><option value="codex">本机 Codex CLI</option></select></label>
+  <label class="field"><span>两层文案由谁生成</span><select name="provider"><option value="codex">Codex · GPT-6-Luna</option>${state.capabilities.config.provider==='codex'?'':'<option value="deepseek">DeepSeek API（复用识别服务配置）</option>'}</select></label>
   <label class="field"><span>文案及配音语言</span><select name="language"><option value="en">英语</option><option value="es">西班牙语</option><option value="zh">中文</option></select></label><label class="field"><span>合成方式</span><select name="mode"><option value="preview">先预览完整成片，再确认输出</option><option value="direct">确认AI开头后，直接批量输出完整视频</option></select></label>
   <label class="check-label"><input name="rights_allowed" type="checkbox" required>已确认当前产品知识与账号素材可用于本次制作</label><p class="small muted">先保存任务，不立即调用生成。即梦开头确认前不会生成续接配音。</p><button class="primary">保存生成任务</button></form>`);
   $('#generationCreate').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);action(async()=>{await api(`${wb()}/generation`,'POST',{...Object.fromEntries(f),rights_allowed:f.has('rights_allowed')});$('#dialog').close()})};

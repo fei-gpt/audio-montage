@@ -45,6 +45,7 @@ class Generation:
         cfg=read(file) if file.exists() else {}
         cfg.setdefault('dreamina_bin',str(REPO/'.dreamina-runtime/dreamina.exe') if os.name=='nt' else 'dreamina')
         cfg.setdefault('codex_bin',shutil.which('codex') or 'codex')
+        cfg.setdefault('codex_model','gpt-6-luna')
         cfg.setdefault('voice_id',os.environ.get('ELEVENLABS_VOICE_ID',''))
         cfg.setdefault('tts_model','eleven_multilingual_v2')
         cfg.setdefault('duration',5);cfg.setdefault('video_resolution','720p');cfg.setdefault('jimeng_model','')
@@ -89,7 +90,8 @@ class Generation:
 
     def create(self,p,w,body):
         if not self.app.workspace(p,w)['assigned']:raise Problem('请先选择已分配账号')
-        provider=body.get('provider','deepseek');brief=str(body.get('brief','')).strip();language=body.get('language','en')
+        provider=body.get('provider','codex');brief=str(body.get('brief','')).strip();language=body.get('language','en')
+        if self.app.config().get('provider')=='codex' and provider!='codex':raise Problem('后续文案使用Codex GPT-6-Luna，不调用DeepSeek')
         if provider not in {'deepseek','codex'} or not brief or len(brief)>20000 or language not in {'en','es','zh'}:raise Problem('请填写生成要求，选择文案服务及语言')
         if body.get('rights_allowed') is not True:raise Problem('请确认产品知识与账号素材的使用范围')
         mode=body.get('mode','preview')
@@ -141,10 +143,8 @@ class Generation:
         else:
             receipt=folder/'codex-attempt.json'
             if receipt.exists():raise ValueError('Codex上次执行无完整结果，请先核查，不自动重复运行')
-            save(folder/'schema.json',SCHEMA);save(receipt,{'attempted_at':now()})
-            self.command([g['settings']['codex_bin'],'exec','--skip-git-repo-check','--sandbox','read-only','--json',
-                '--output-schema',folder/'schema.json','-o',dest,'-'],folder,prompt,600)
-            result=read(dest)
+            from codex_vision import call as codex_call
+            result=codex_call({'provider':'codex','model':'gpt-6-luna','codex_bin':g['settings']['codex_bin']},prompt,[],folder/'script-cache',paid)
         validated(result)
         save(dest,result);return result
 

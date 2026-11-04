@@ -45,3 +45,47 @@ class CodexVisionTest(unittest.TestCase):
                 self.assertEqual(codex.call_args.args[0]['model'],'gpt-6-luna')
         finally:execution_config.reset(token)
         self.assertIsNone(execution_config.get())
+
+
+import test_workbench as fixtures
+
+
+class CodexDefaultsTest(unittest.TestCase):
+    setUpClass=classmethod(fixtures.WorkbenchTest.setUpClass.__func__)
+    tearDownClass=classmethod(fixtures.WorkbenchTest.tearDownClass.__func__)
+    setUp=fixtures.WorkbenchTest.setUp
+    tearDown=fixtures.WorkbenchTest.tearDown
+    attach=fixtures.WorkbenchTest.attach
+
+    def test_fresh_install_and_jobs_default_to_luna_without_api_key(self):
+        self.attach()
+        with patch('shutil.which',return_value='codex.exe'):
+            self.assertEqual(self.app.config()['model'],'gpt-6-luna')
+            self.assertTrue(self.app.status()['vision_ready'])
+            j=self.app.create_job(self.p['id'],self.w['id'],'organize',True)
+        self.assertEqual(j['status'],'queued')
+        self.assertEqual(j['analysis_config']['provider'],'codex')
+        self.assertEqual(j['analysis_config']['model'],'gpt-6-luna')
+
+    def test_codex_setting_does_not_require_or_store_a_deepseek_key(self):
+        with patch('shutil.which',return_value='codex.exe'):
+            result=self.app.set_config({'provider':'codex','model':'gpt-6-luna'})
+        self.assertTrue(result['vision_ready'])
+        self.assertEqual(self.app.config()['provider'],'codex')
+        self.assertFalse((self.app.root/'credentials.json').exists())
+
+    def test_generation_default_is_codex_and_deepseek_is_blocked(self):
+        g=self.app.generation.create(self.p['id'],self.w['id'],{'brief':'Show the product','rights_allowed':True})
+        self.assertEqual(g['provider'],'codex')
+        self.assertEqual(g['settings']['codex_model'],'gpt-6-luna')
+        with self.assertRaisesRegex(fixtures.Problem,'不调用DeepSeek'):
+            self.app.generation.create(self.p['id'],self.w['id'],{'provider':'deepseek','brief':'Show the product','rights_allowed':True})
+
+    def test_provider_switch_cannot_reissue_unknown_legacy_request(self):
+        self.attach();a=self.app.store.all('asset',self.w['id'])[0]
+        j={'id':'a'*32,'workspace_id':self.w['id'],'product_id':self.p['id']}
+        folder=self.app.wroot(self.w['id'])/'tasks'/j['id']/a['id']/'vision-cache'
+        folder.mkdir(parents=True);(folder/'legacy.attempt.json').write_text('{}',encoding='utf-8')
+        with patch('codex_vision.call',side_effect=AssertionError('must not resend')):
+            with self.assertRaisesRegex(fixtures.Problem,'历史API请求结果不明'):
+                self.app.process_asset(j,a,self.p)
