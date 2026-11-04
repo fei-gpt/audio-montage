@@ -1,0 +1,12 @@
+const assert = require('node:assert/strict');
+const {defaultWorkspace: pick} = require('./workbench/static/account-selection.js');
+const p = {id:'p',name:'lightplay',workspaces:[{id:'a',name:'LIGHTPLAY ',assigned:true},{id:'b',name:'other',assigned:true}]};
+assert.equal(pick(p,null,{}),'a');
+assert.equal(pick(p,null,{p:'b'}),'b');
+assert.equal(pick(p,'b',{}),'b');
+assert.equal(pick(p,null,{p:''}),null);
+assert.equal(pick(p,null,{p:'deleted'}),'a');
+assert.equal(pick({...p,workspaces:[p.workspaces[1]]},null,{}),null);
+assert.equal(pick({...p,workspaces:[...p.workspaces,{id:'c',name:'lightplay',assigned:true}]},null,{}),null);
+assert.equal(pick({...p,workspaces:[{...p.workspaces[0],assigned:false}]},null,{}),null);
+console.log('8 account selection cases passed');
