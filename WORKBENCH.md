@@ -21,7 +21,13 @@ python3 -m workbench.server
 
 ## Hypit 本机部署
 
-运行 `sh scripts/install-hypit.sh`，需要 Node.js 22.15+ / npm 和网络。安装固定版本 `@hypit/hypit@0.3.1` 到项目 `.hypit-runtime`，不会修改系统全局软件。适配器自动发现该路径；也支持显式 `HYPIT_BIN` 和系统 PATH。安装目录不上传 Git，换机器需重新运行安装脚本。
+运行 `sh scripts/install-hypit.sh`（macOS/Linux），Windows 请在仓库 PowerShell 中运行：
+
+```powershell
+.\scripts\install-hypit.ps1 -AllowInsecureTls
+```
+
+脚本需要 Node.js 22.15+ / npm 和网络，固定安装 `@hypit/hypit@0.3.1` 到项目 `.hypit-runtime`，并写入安装清单、验证 CLI 版本。默认使用本机 Clash `127.0.0.1:7897`；可用 `-Proxy` 指定其他代理，或用 `-NoProxy` 直连。`-AllowInsecureTls` 只影响本次 npm 安装的证书校验，不修改系统设置。适配器自动发现项目运行时；也支持显式 `HYPIT_BIN` 和系统 PATH。安装目录不上传 Git，换机器需重新运行脚本。
 
 验证：`.hypit-runtime/node_modules/.bin/hypit version`；`python3 montage.py hypit-analyze /绝对路径/视频.mp4 --output /新的证据目录`。证据包括媒体信息、变化候选、逐帧图片和网格。机械变化候选仍需视觉及人工核实，不能直接等同于切镜。
 
