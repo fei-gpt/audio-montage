@@ -587,12 +587,20 @@ class Workbench:
         if 'facts' in body:s['facts']=str(body['facts'])[:10000]
         s.update(review_decision=decision,review_note=str(body.get('note',''))[:5000],reviewed_at=now())
         if decision=='keep' and body.get('content_confirmed') is not True:raise Problem('保留前需确认实际核对内容、切镜及展示效果')
-        s['human_confirmed']=decision=='keep';return self.store.put('shot',w,s)
+        s['human_confirmed']=decision=='keep'
+        from video_document import write_document
+        asset=self.store.get('asset',s['asset_id'],w)
+        reviews=[x for x in self.store.all('shot',w) if x.get('asset_id')==s['asset_id'] and not x.get('stale') and x['id']!=s['id']]+[s]
+        write_document(self.asset_path(w,s['asset_id']),asset['sha256'],
+                       material_kind=asset['kind'],reviews=reviews)
+        return self.store.put('shot',w,s)
     def export(self,p,w,ids):
         ws=self.workspace(p,w)
         if not ws['assigned']:raise Problem('请先分配账号',409)
         if not ids:raise Problem('请选择已核实的镜头')
         rows=[self.store.get('shot',sid,w) for sid in ids]
+        if any(self.store.get('asset',s['asset_id'],w)['kind']=='prepared' for s in rows):
+            raise Problem('已剪好的片段只保存 JSON 整理结果，无需再次导出；请选择原视频镜头',409)
         # Validate the entire selection before encoding anything.
         for s in rows:
             self.asset_path(w,s['asset_id']);j=self.store.get('job',s['job_id'],w)
@@ -625,7 +633,16 @@ class Workbench:
             subprocess.run(cmd+['-c:v','libx264','-pix_fmt','yuv420p',str(out)],check=True,capture_output=True,timeout=300)
             portrait_geometry(probe(out));subprocess.run(['ffmpeg','-v','error','-nostdin','-i',str(out),'-f','null','-'],check=True,capture_output=True,timeout=300)
             if abs(media_duration(probe(out),'video')-(s['end']-s['start']))>.15:raise Problem('导出时长不符')
-            manifest.append({'shot_id':s['id'],'path':str(out),'sha256':digest(out),'start':s['start'],'end':s['end']})
+            from video_document import write_document
+            clip=dict(s,start=0,end=times[bi]-times[ai])
+            # Source-relative temporal observations stay explicitly tied to the source range.
+            doc=write_document(out,digest(out),complete=False,material_kind='prepared',
+                               origin={'video_name':src.name,'source_sha256':s['asset_sha256'],
+                                       'start':times[ai],'end':times[bi],
+                                       '说明':'以下观察时间均对应原视频时间轴，不代表片段内时间。',
+                                       'observation':s},
+                               clip={'start':clip['start'],'end':clip['end'],'facts':s.get('facts','')})
+            manifest.append({'shot_id':s['id'],'path':str(out),'json_path':str(doc),'sha256':digest(out),'start':s['start'],'end':s['end']})
         return self.store.put('export',w,{'id':eid,'workspace_id':w,'product_id':p,'files':manifest,'created_at':now()})
     def migrate(self,data):
         raw=json.dumps(data,sort_keys=True,ensure_ascii=False);key=hashlib.sha256(raw.encode()).hexdigest()
