@@ -70,6 +70,17 @@ def source(asset):
     return path, media_duration(info, 'video')
 
 
+def sample_times(start,end,every):
+    """Use the same indexed arithmetic for frame production and consumption."""
+    if not all(number(x) for x in (start,end,every)) or every<=0 or start<0 or end<=start:raise ValueError('抽帧范围无效')
+    index=0
+    while True:
+        value=start+index*every
+        if value>=end-1e-9:break
+        yield value
+        index+=1
+
+
 def observe(args):
     """Prepare timed evidence for Codex; never invent observations."""
     record_path = Path(args.record).resolve()
@@ -83,14 +94,13 @@ def observe(args):
     folder = record_path.parent.parent / 'evidence' / asset['asset_hash']
     folder.mkdir(parents=True, exist_ok=True)
     evidence = []
-    t = start
-    while t < end:
+    for t in sample_times(start,end,args.every):
         dest = folder / f'{t:.6f}.jpg'
         if not dest.exists():
             run(['ffmpeg', '-v', 'error', '-nostdin', '-ss', t, '-i', path,
                  '-frames:v', '1', '-vf', 'scale=720:-2', dest])
+        if not dest.is_file() or not dest.stat().st_size:raise ValueError(f'取帧未生成有效图片：{t:.6f}秒')
         evidence.append({'time': t, 'path': str(dest)})
-        t += args.every
     manifest = folder / f'observation-{start:.6f}-{end:.6f}-{args.every:.6f}.json'
     save(manifest, {'asset_hash': asset['asset_hash'], 'source': path,
                     'start': start, 'end': end, 'evidence': evidence,

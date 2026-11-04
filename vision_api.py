@@ -128,10 +128,9 @@ def observation_windows(duration, size=20.0, overlap=4.0):
 
 
 def dense_frames(folder, start, end):
+    from understanding import sample_times
     interval = max(.1, (end - start) / 12)
-    return [{'time': start + i * interval,
-             'path': str(folder / f'{start + i * interval:.6f}.jpg')}
-            for i in range(13) if start + i * interval < end]
+    return [{'time': t,'path':str(folder/f'{t:.6f}.jpg')} for t in sample_times(start,end,interval)]
 
 
 def corrected_bounds(candidate, review, window_start, window_end):

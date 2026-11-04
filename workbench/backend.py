@@ -385,13 +385,19 @@ class Workbench:
         self.store.put('job',scope,j)
         if j['status']=='queued' and self.pool:self.pool.submit(self.run_job,j['id'],scope)
         return j
-    def resume(self,p,w,jid,allow_paid,retry_failed=False):
+    def resume(self,p,w,jid,allow_paid,retry_failed=False,continue_on_error=None,asset_ids=None):
         scope=w or p;j=self.store.get('job',jid,scope)
         if j['product_id']!=p:raise Problem('任务不属于当前产品',404)
         if j['status'] in {'running','queued'}:return j
         if w and not self.workspace(p,w)['assigned']:raise Problem('请先分配账号',409)
         if not self.status()['vision_ready']:raise Problem('请先完成视觉API配置',409)
         if allow_paid is not True:raise Problem('需要明确允许本次模型调用',409)
+        if asset_ids is not None:
+            if not w or not isinstance(asset_ids,list) or not asset_ids or any(not isinstance(x,str) for x in asset_ids):raise Problem('素材范围无效')
+            if j.get('asset_ids') and set(asset_ids)!=set(j['asset_ids']):raise Problem('不能扩大或改变已固定的任务素材范围')
+            for aid in asset_ids:self.store.get('asset',aid,w)
+            j['asset_ids']=list(dict.fromkeys(asset_ids))
+        if continue_on_error is not None:j['continue_on_error']=continue_on_error is True
         j.update(status='queued',stage='继续已保存进度',allow_paid=True,retry_failed=retry_failed is True,error='');self.store.put('job',scope,j)
         if self.pool:self.pool.submit(self.run_job,jid,scope)
         return j
@@ -456,6 +462,8 @@ class Workbench:
                 assets=[a for a in assets if a['id'] in j['asset_ids']]
                 if len(assets)!=len(j['asset_ids']):raise Problem('所选测试素材已失效，请重新选择')
             if not assets:raise Problem('没有可用的9:16素材：'+json.dumps(scan['errors'],ensure_ascii=False)[:400])
+            j.setdefault('asset_errors',{})
+            self.job_update(j,total_count=len(assets),success_count=len(j['done']))
             for i,a in enumerate(assets):
                 checkpoint=a['id']+':'+a['sha256']
                 if checkpoint in j['done']:
@@ -463,10 +471,26 @@ class Workbench:
                     cached=load_document(a['path'],a['sha256'])
                     if cached and cached.get('complete') and cached.get('context',{}).get('visual_details'):continue
                 self.job_update(j,progress=15+int(80*i/len(assets)),stage=f"理解视频 {i+1}/{len(assets)}：{a['name']}")
-                self.process_asset(j,a,product)
+                try:
+                    self.process_asset(j,a,product)
+                except Exception as exc:
+                    import urllib.error
+                    if isinstance(exc,(urllib.error.URLError,TimeoutError,ConnectionError)):raise
+                    if not j.get('continue_on_error') or any(x in str(exc) for x in ('HTTP 401','HTTP 402','HTTP 403','HTTP 429','缺少配置指定的 API 密钥')):raise
+                    import traceback
+                    from montage import save
+                    failure={'asset_id':a['id'],'name':a['name'],'source_sha256':a['sha256'],'error':str(exc)[:1800],'at':now(),'automatic_paid_retry':False}
+                    j['asset_errors'][checkpoint]=failure
+                    save(self.root/'job-errors'/jid/(a['id']+'.json'),dict(failure,traceback=traceback.format_exc()))
+                    self.job_update(j,asset_errors=j['asset_errors'],attempted_count=i+1,success_count=len(j['done']),stage=f"已隔离 {a['name']} 的错误，继续其他素材")
+                    continue
+                j['asset_errors'].pop(checkpoint,None)
                 if checkpoint not in j['done']:j['done'].append(checkpoint)
-                self.job_update(j,done=j['done'])
-            self.job_update(j,status='awaiting_review',progress=100,stage='处理完成，请核查镜头内容与边界；不是最终语义验收',scan_errors=scan['errors'])
+                self.job_update(j,done=j['done'],asset_errors=j['asset_errors'],success_count=len(j['done']),attempted_count=i+1)
+            failures=len(j['asset_errors'])
+            self.job_update(j,status='partial_failure' if failures else 'awaiting_review',progress=100,
+                stage=f"本批处理结束：成功{len(j['done'])}/{len(assets)}，未完成{failures}；结果待内容与边界审核",
+                error=f'{failures}条素材未完成，错误记录已保留；不会自动重发不明付费请求' if failures else '',scan_errors=scan['errors'])
         except Exception as exc:
             import traceback
             from montage import save
