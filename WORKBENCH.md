@@ -1,5 +1,9 @@
 # 多产品、多账号本地工作台
 
+默认处理服务为 **Codex · GPT-6-Luna**（`gpt-6-luna`）。产品资料理解、素材图片分析、剪辑选片及新建文案任务使用本机已登录 ChatGPT 的 Codex CLI，消耗账号额度，不要求 DeepSeek 密钥，不自动回退 DeepSeek 或更换模型。任务保存服务与模型快照；视频旁的分析 JSON 继续保留。历史 API 请求若结果不明，切换服务后仍隔离，避免重复提交。
+
+已有安装需在识别设置保存 `{provider: "codex", model: "gpt-6-luna"}`。本地配置改动与源码升级应在没有活动推理请求时加载；先保存进度，再继续原任务。以下 DeepSeek/API 配置仅供明确选择旧兼容接口的安装参考，并非默认流程。
+
 ## 启动
 
 Windows 可双击 `start-workbench.cmd` 启动（8768）。项目会自动加载 `.media-runtime/bin` 中的 FFmpeg/ffprobe，子进程与 Hypit 使用同一 PATH。可用 `MONTAGE_MEDIA_BIN` 指定完整媒体工具目录。

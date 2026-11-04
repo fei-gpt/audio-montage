@@ -2,7 +2,7 @@
 
 视频工作台的“视频剪辑制作”模块直接复用账号已确认素材库，提供配音、背景音乐、开头／结尾三个上传框和整段文案输入；另有 DeepSeek/Codex 文案→即梦开头→确认→ElevenLabs续接配音→剪辑合成的 [AI生成链路](GENERATION_WORKBENCH.md)。使用说明与当前验收边界见 [剪辑工作台说明](EDITING_WORKBENCH.md)。
 
-新增：[多产品、多账号本地工作台](WORKBENCH.md)，支持资料接入、账号素材库、后台识别、审核与分段导出。已提供 Hypit 0.3.1 安装脚本和 DeepSeek 视觉默认配置；[验证范围](WORKBENCH_VALIDATION.md)。
+新增：[多产品、多账号本地工作台](WORKBENCH.md)，支持资料接入、账号素材库、后台识别、审核与分段导出。已提供 Hypit 0.3.1 安装脚本，后续理解与选片默认使用 Codex `gpt-6-luna`，不自动回退 DeepSeek；[验证范围](WORKBENCH_VALIDATION.md)。
 
 **先看 [功能总览与 WorkBuddy 接续说明](CAPABILITIES.md)**：按目标选择功能、输入和输出，区分模拟验证与真实服务验收。
 

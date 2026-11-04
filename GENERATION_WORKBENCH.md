@@ -4,7 +4,7 @@
 
 ## 顺序
 
-1. 新建AI任务，填写目标、文案规则和语言，选择 DeepSeek API 或本机 Codex CLI。先保存，不自动调用。
+1. 新建AI任务，填写目标、文案规则和语言。默认使用 Codex CLI 的 `gpt-6-luna` 生成文案，不自动换模型或回退 DeepSeek。先保存，不自动调用。
 2. 允许文案调用与即梦额度后，生成两层文字：AI开头口播及即梦画面提示词、实拍续接配音稿及画面要求。产品事实来自共用知识，不重新读取原始资料。
 3. 调用官方 Dreamina CLI，严格9:16、自带口播音轨。保存 submit_id，后台低频查询同一任务并下载正式结果；查询失败不重新提交。不明提交记录阻止重复计费。
 4. 视频返回工作台后，用户实际播放并确认当前视频指纹。未确认之前不会调用 ElevenLabs。
@@ -15,7 +15,7 @@
 
 “生成服务设置”可直接填写 ElevenLabs 密钥，保存后获取声音列表并选择声音。密钥仅写入本机 credentials.json，不回显、不进Git。
 
-DeepSeek复用工作台识别服务配置；Codex使用本机CLI已有登录，执行只读沙箱、结构化输出，结果缓存后不重复调用。没有自动切换文案服务。
+Codex使用本机CLI已有ChatGPT登录，明确指定 `gpt-6-luna` 并执行只读沙箱，JSON结果校验后缓存，不重复调用。默认Codex配置下禁止创建DeepSeek文案任务；即梦和ElevenLabs仍是独立的后续生成服务，不会自动启动。
 
 即梦使用官方Windows二进制，放在仓库 `.dreamina-runtime/dreamina.exe`，可运行 `powershell -ExecutionPolicy Bypass -File scripts/install-dreamina.ps1` 安装或修复。安装来源为[即梦官方CLI入口](https://jimeng.jianying.com/ai-tool/install)中的官方分发地址。安装器只验证帮助，不生成。
 
