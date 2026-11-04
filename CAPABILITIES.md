@@ -15,7 +15,7 @@
 | 建长期素材库 | index-library → prepare-understanding → observe-media → import-understanding | 素材 → 带证据的语义片段 | 无独立视觉模型调用；助手要看图片并填写记录 |
 | 检索及自动选片 | search/candidates/choose 或 auto-plan/apply-plan | 已复核标签、画面需求 → 选片方案 | 词项检索，不是向量语义检索；缺素材留空 |
 | 从整片选材 | recognize-content → extract-segments（可选 analyze-content-api） | 完整视频、剪辑要求 → 多个独立 MP4（默认1–4秒，核实的一镜到底完整展示可例外） | 视觉判断需助手或视觉 API；越界与未确认候选交人工 |
-| Hypit 参考分析 | hypit-analyze | 参考视频 → Hypit probe、机械边界候选、带时间码抽帧和时间网格 | 需要已安装 Hypit CLI；机械边界不是语义切镜结论 |
+| Hypit 参考分析 | recognize-content（默认）/ hypit-analyze | 参考视频 → Hypit probe、机械边界候选、带时间码抽帧和时间网格 | 默认需要已安装 Hypit CLI；可用 --no-hypit 回退；机械边界不是语义切镜结论 |
 | 看素材、记录反馈 | contact-sheet / selection-feedback / similar-media | 索引 → 联系表、反馈、相似提示 | 相似检测只做三帧提示，不自动合并 |
 | 剪映时间线各段导出 | export-timeline-segments | 已有剪映草稿 → 每段独立 MP4 | Windows + 匹配 jy-draftc/剪映；真实引擎未验证 |
 | 交给剪映继续编辑 | export-draft | 本项目选片 → 可编辑草稿包 | 可选；不是“逐片段导出”，Mac 打开兼容性未验证 |

@@ -340,9 +340,18 @@ WorkBuddy 项目技能位于 `.codebuddy/skills/content-recognition/`。
 标记 keep 前会逐项校验用户硬条件，未知结果不会被当成通过。旧 task.json 归档到任务目录
 `history/`，改动记录追加到 `review-log.json`。字段说明见 CONTENT_STANDARD.md。
 
-## 可选 Hypit 参考视频分析
+## 默认 Hypit 参考视频分析
 
-如果本机已安装 Hypit CLI，可用 `hypit-analyze` 将 Hypit 的本地媒体分析接入本项目：
+`recognize-content` 默认会先调用已安装的 Hypit CLI，对整片视频生成探测、机械边界候选、带时间码抽帧和时间网格：
+
+```bash
+./run.sh recognize-content --video ./reference.mp4 \
+  --request '找出完整展示动作，排除准备和严重遮挡' \
+  --output ./work/content-task
+```
+
+结果保存在任务目录的 `hypit-analysis/`，任务记录会在 `task.json` 的 `analysis.hypit` 中保存 manifest 路径。
+如果需要兼容没有 Hypit CLI 的环境，可显式使用 `--no-hypit` 跳过默认分析。也可以单独运行：
 
 ```bash
 ./run.sh hypit-analyze ./reference.mp4 --output ./work/hypit-reference

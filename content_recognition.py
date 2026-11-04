@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from montage import read, save, probe, portrait_geometry, media_duration, fingerprint, number, run
 from asset_index import digest_json
 from workflow import archive
+import hypit_adapter
 
 
 DIMENSIONS = ('content_legibility', 'temporal_integrity', 'technical_usability', 'evidence_sufficiency')
@@ -86,6 +87,19 @@ def prepare(args):
     if task.exists():
         raise ValueError('任务已存在，请续接现有任务或选择新目录')
     digest = fingerprint(source)
+    hypit_output = root / 'hypit-analysis'
+    if not getattr(args, 'no_hypit', False):
+        hypit_adapter.analyze(SimpleNamespace(
+            video=str(source),
+            output=str(hypit_output),
+            hypit=getattr(args, 'hypit', None),
+            start=0.0,
+            end=media_duration(info, 'video'),
+            every=getattr(args, 'hypit_every', 1.0),
+            overview_frames=getattr(args, 'hypit_overview_frames', 12),
+            cell=getattr(args, 'hypit_cell', 360),
+            columns=getattr(args, 'hypit_columns', 4),
+        ))
     save(task, {'version': 1, 'source': str(source), 'source_sha256': digest,
                 'duration': media_duration(info, 'video'), 'request': args.request,
                 'duration_policy': 'single_take_complete_display',
@@ -93,6 +107,8 @@ def prepare(args):
                 'rights': {'usage': 'unknown'}, 'requirements': {'hard': [], 'preferences': [], 'exclusions': [], 'confirmed': False},
                 'criteria': {'base_version': 'content-v2', 'profiles': ['general'], 'user_revision': 1},
                 'analysis': {'overview': '', 'product_intent': {}, 'shot_boundaries': [],
+                             'hypit': {'enabled': not getattr(args, 'no_hypit', False),
+                                       'manifest': str(hypit_output / 'manifest.json') if not getattr(args, 'no_hypit', False) else None},
                              'shot_boundary_reviewed': False, 'coverage': [], 'reviewed': False}, 'segments': [],
                 'segment_example': {'id': 'S001', 'start': 0, 'end': 1,
                     'facts': '', 'editorial_value': '', 'quality_issues': [],
@@ -560,7 +576,14 @@ def reselect_segments(args):
 def register(sub):
     p = sub.add_parser('recognize-content', help='创建整片内容识别任务及概览证据，判断由视觉助手完成')
     p.add_argument('--video', required=True); p.add_argument('--request', required=True)
-    p.add_argument('--output', required=True); p.set_defaults(func=prepare)
+    p.add_argument('--output', required=True)
+    p.add_argument('--hypit', default=None, help='Hypit CLI 路径；也可用 HYPIT_BIN')
+    p.add_argument('--no-hypit', action='store_true', help='跳过默认 Hypit 分析，使用现有本地证据流程')
+    p.add_argument('--hypit-every', type=float, default=1.0, help='Hypit 时间网格采样间隔（秒）')
+    p.add_argument('--hypit-overview-frames', type=int, default=12)
+    p.add_argument('--hypit-cell', type=int, default=360)
+    p.add_argument('--hypit-columns', type=int, default=4)
+    p.set_defaults(func=prepare)
     p = sub.add_parser('extract-segments', help='导出内容任务中已核实的多个有效区间')
     p.add_argument('--task', required=True); p.set_defaults(func=extract)
     p = sub.add_parser('review-segments', help='回填人工审核结论并重新导出，保留历史')

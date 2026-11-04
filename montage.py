@@ -17,7 +17,8 @@ from fractions import Fraction
 
 
 def run(args):
-    result = subprocess.run([str(x) for x in args], capture_output=True, text=True)
+    result = subprocess.run([str(x) for x in args], capture_output=True, text=True,
+                            encoding='utf-8', errors='replace')
     if result.returncode:
         raise ValueError(result.stderr[-4000:])
     return result.stdout
