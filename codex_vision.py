@@ -1,5 +1,6 @@
 """Image analysis through the signed-in Codex CLI; no DeepSeek fallback."""
 import json,os,shutil,subprocess,tempfile
+import urllib.request
 from pathlib import Path
 from asset_index import digest_json
 from montage import fingerprint,read,save
@@ -26,12 +27,17 @@ def call(config,prompt,evidence,cache,allow_paid):
     if not allow_paid:raise ValueError('需要允许本次Codex调用，可能消耗账号额度')
     env=dict(os.environ)
     for key in ('OPENAI_API_KEY','CODEX_API_KEY'):env.pop(key,None)
+    # The Rust CLI does not inherit Windows' Internet Options proxy by default.
+    # Reuse that existing proxy for this child process only.
+    proxies=urllib.request.getproxies()
+    for scheme in ('http','https'):
+        if proxies.get(scheme):env.setdefault(scheme.upper()+'_PROXY',proxies[scheme])
     login=subprocess.run([binary,'login','status'],capture_output=True,text=True,encoding='utf-8',errors='replace',env=env,timeout=30)
     if login.returncode or 'ChatGPT' not in login.stdout+login.stderr:raise ValueError('Codex CLI未通过ChatGPT登录；不会改用API密钥或DeepSeek')
     # Short isolated paths avoid Windows command-line length limits. Only the
     # supplied images are staged, never the user's source videos or other accounts.
     with tempfile.TemporaryDirectory(prefix='montage-codex-') as temporary:
-        folder=Path(temporary);output=folder/'response.json';command=[binary,'exec','--ignore-user-config','--skip-git-repo-check','--ephemeral','--sandbox','read-only','--model',model,'--json','--color','never','--cd',str(folder),'-o',str(output)]
+        folder=Path(temporary);output=folder/'response.json';command=[binary,'exec','--ignore-user-config','--skip-git-repo-check','--ephemeral','--sandbox','read-only','--model',model,'-c','mcp_servers.codex_apps.enabled=false','--json','--color','never','--cd',str(folder),'-o',str(output)]
         frames=[]
         for i,frame in enumerate(evidence):
             image=folder/f'{i:04d}.jpg';shutil.copyfile(frame['path'],image)
