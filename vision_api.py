@@ -13,6 +13,7 @@ from montage import read, save, fingerprint, number
 from asset_index import digest_json
 from elevenlabs_adapter import NoRedirect
 from content_recognition import content_problem, requirement_match
+from vision_json import decode_response
 
 retry_incomplete = ContextVar('retry_incomplete', default=False)
 
@@ -51,6 +52,16 @@ def call(config, prompt, evidence, cache, allow_paid):
     result_path = cache / (digest + '.json')
     if result_path.exists():
         return read(result_path)
+    raw_path=cache/(digest+'.raw.json')
+    if raw_path.exists():
+        try:
+            raw=read(raw_path);result,recovery=decode_response(raw)
+        except ValueError:
+            if not retry_incomplete.get():raise
+        else:
+            save(result_path,result);save(cache/(digest+'.usage.json'),raw.get('usage',{}))
+            if recovery:save(cache/(digest+'.recovery.json'),recovery)
+            return result
     if not allow_paid:
         raise ValueError('需要 --allow-paid 才能发送图片/要求至配置服务并允许计费')
     if not key:
@@ -69,10 +80,11 @@ def call(config, prompt, evidence, cache, allow_paid):
     body = json.dumps(payload).encode()
     if parsed.hostname == 'api.deepseek.com' and (len(evidence) > 600 or len(body) > 48 * 1024 * 1024):
         raise ValueError('超过 DeepSeek 图片数量或48MiB请求限制，未发送请求，请减少抽帧数量')
-    if retry_receipt:
+    if retry_receipt or raw_path.exists():
         history = cache / 'attempt-history'
         history.mkdir(parents=True, exist_ok=True)
-        receipt.replace(history / (digest + '.' + uuid4().hex + '.attempt.json'))
+        if retry_receipt:receipt.replace(history / (digest + '.' + uuid4().hex + '.attempt.json'))
+        if raw_path.exists():raw_path.replace(history/(digest+'.'+uuid4().hex+'.raw.json'))
     save(receipt, {'status': 'attempted', 'request_hash': digest})
     req = urllib.request.Request(endpoint, data=body,
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
@@ -92,22 +104,9 @@ def call(config, prompt, evidence, cache, allow_paid):
     except (OSError, ValueError) as exc:
         save(receipt, {'status': 'response_incomplete', 'request_hash': digest, 'error_type': type(exc).__name__})
         raise ValueError(f'视觉请求未完成（{type(exc).__name__}）；记录已保留，可在继续任务时选择重新发送') from None
-    save(cache / (digest + '.raw.json'), raw)
-    if not isinstance(raw, dict) or not raw.get('choices'):
-        raise ValueError('响应缺少 choices，原始响应已缓存；不自动重试')
-    choice = raw['choices'][0] if isinstance(raw['choices'][0], dict) else {}
-    if choice.get('finish_reason') not in {'stop', None}:
-        raise ValueError('模型响应未完整结束，原始响应已缓存')
-    text = str((choice.get('message') or {}).get('content') or '').strip()
-    if not text:
-        raise ValueError('模型返回空内容，原始响应已缓存；不自动重试')
-    fenced = re.match(r'^```[A-Za-z]*\s*\n(.*?)\n?```$', text, re.S)
-    if fenced:
-        text = fenced.group(1).strip()
-    try:
-        result = json.loads(text)
-    except ValueError:
-        raise ValueError('模型返回的不是有效 JSON，原始响应已缓存；不自动重试') from None
+    save(raw_path, raw)
+    result,recovery=decode_response(raw)
+    if recovery:save(cache/(digest+'.recovery.json'),recovery)
     save(result_path, result)
     save(cache / (digest + '.usage.json'), raw.get('usage', {}))
     return result
