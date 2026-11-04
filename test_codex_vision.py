@@ -36,6 +36,25 @@ class CodexVisionTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'结果不明'):call({'model':'gpt-6-luna'},'test',[],root,True)
                 self.assertEqual(run.call_count,2)
 
+    def test_local_config_rejection_can_be_archived_before_first_model_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);attempts=[]
+            def execute(command,**kwargs):
+                if command[1:]==['login','status']:return SimpleNamespace(returncode=0,stdout='Logged in using ChatGPT',stderr='')
+                self.assertNotIn('mcp_servers.codex_apps.enabled=false',command)
+                attempts.append(command)
+                if len(attempts)==1:
+                    kwargs['stderr'].write('Error loading config.toml: invalid transport\nin mcp_servers.codex_apps\n')
+                    return SimpleNamespace(returncode=1)
+                Path(command[command.index('-o')+1]).write_text('{"ok":true}',encoding='utf-8')
+                return SimpleNamespace(returncode=0)
+            with patch('codex_vision.shutil.which',return_value='codex.exe'),patch('codex_vision.subprocess.run',side_effect=execute):
+                with self.assertRaisesRegex(ValueError,'执行未完成'):call({'model':'gpt-6-luna'},'test',[],root,True)
+                self.assertEqual(call({'model':'gpt-6-luna'},'test',[],root,True),{'ok':True})
+            history=list((root/'attempt-history').glob('*/classification.json'))
+            self.assertEqual(len(history),1)
+            self.assertFalse(json.loads(history[0].read_text(encoding='utf-8'))['model_request_sent'])
+
     def test_job_override_is_scoped_and_never_calls_deepseek(self):
         from vision_api import call as route
         token=execution_config.set({'provider':'codex','model':'gpt-6-luna'})

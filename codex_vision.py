@@ -1,6 +1,7 @@
 """Image analysis through the signed-in Codex CLI; no DeepSeek fallback."""
 import json,os,shutil,subprocess,tempfile
 import urllib.request
+from uuid import uuid4
 from pathlib import Path
 from asset_index import digest_json
 from montage import fingerprint,read,save
@@ -23,7 +24,16 @@ def call(config,prompt,evidence,cache,allow_paid):
         result,_=decode_response({'choices':[{'finish_reason':'stop','message':{'content':raw_path.read_text(encoding='utf-8')}}]})
         if not isinstance(result,dict):raise ValueError('Codex分析必须返回JSON对象')
         save(result_path,result);return result
-    if receipt.exists():raise ValueError('Codex此前请求结果不明，记录已保留；不自动重发或换模型')
+    if receipt.exists():
+        errors=Path(str(prefix)+'.stderr.log');events=Path(str(prefix)+'.events.jsonl')
+        # A config parser rejection happens before a session or model request.
+        # Only this proven local failure may be retried after correcting config.
+        not_sent=errors.is_file() and errors.read_text(encoding='utf-8',errors='replace').lstrip().startswith('Error loading config.toml:') and events.is_file() and events.stat().st_size==0
+        if not not_sent:raise ValueError('Codex此前请求结果不明，记录已保留；不自动重发或换模型')
+        if not allow_paid:raise ValueError('需要允许本次Codex调用，可能消耗账号额度')
+        history=cache/'attempt-history'/('local-config-'+uuid4().hex);history.mkdir(parents=True)
+        save(history/'classification.json',{'model_request_sent':False,'reason':'CLI configuration rejected before session startup','automatic_paid_retry':False})
+        for old in (receipt,errors,events):old.replace(history/old.name)
     if not allow_paid:raise ValueError('需要允许本次Codex调用，可能消耗账号额度')
     env=dict(os.environ)
     for key in ('OPENAI_API_KEY','CODEX_API_KEY'):env.pop(key,None)
@@ -37,7 +47,7 @@ def call(config,prompt,evidence,cache,allow_paid):
     # Short isolated paths avoid Windows command-line length limits. Only the
     # supplied images are staged, never the user's source videos or other accounts.
     with tempfile.TemporaryDirectory(prefix='montage-codex-') as temporary:
-        folder=Path(temporary);output=folder/'response.json';command=[binary,'exec','--ignore-user-config','--skip-git-repo-check','--ephemeral','--sandbox','read-only','--model',model,'-c','mcp_servers.codex_apps.enabled=false','--json','--color','never','--cd',str(folder),'-o',str(output)]
+        folder=Path(temporary);output=folder/'response.json';command=[binary,'exec','--ignore-user-config','--skip-git-repo-check','--ephemeral','--sandbox','read-only','--model',model,'--json','--color','never','--cd',str(folder),'-o',str(output)]
         frames=[]
         for i,frame in enumerate(evidence):
             image=folder/f'{i:04d}.jpg';shutil.copyfile(frame['path'],image)
