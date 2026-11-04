@@ -263,14 +263,14 @@ class Workbench:
         self.store.put('job',scope,j)
         if j['status']=='queued' and self.pool:self.pool.submit(self.run_job,j['id'],scope)
         return j
-    def resume(self,p,w,jid,allow_paid):
+    def resume(self,p,w,jid,allow_paid,retry_failed=False):
         scope=w or p;j=self.store.get('job',jid,scope)
         if j['product_id']!=p:raise Problem('任务不属于当前产品',404)
         if j['status'] in {'running','queued'}:return j
         if w and not self.workspace(p,w)['assigned']:raise Problem('请先分配账号',409)
         if not self.status()['vision_ready']:raise Problem('请先完成视觉API配置',409)
         if allow_paid is not True:raise Problem('需要明确允许本次模型调用',409)
-        j.update(status='queued',stage='继续已保存进度',allow_paid=True,error='');self.store.put('job',scope,j)
+        j.update(status='queued',stage='继续已保存进度',allow_paid=True,retry_failed=retry_failed is True,error='');self.store.put('job',scope,j)
         if self.pool:self.pool.submit(self.run_job,jid,scope)
         return j
     def job_update(self,j,**updates): j.update(updates);self.store.put('job',j['scope'],j)
@@ -312,6 +312,8 @@ class Workbench:
     def run_job(self,jid,scope):
         j=self.store.get('job',jid,scope)
         if j['status']!='queued':return
+        from vision_api import retry_incomplete
+        retry_token=retry_incomplete.set(j.get('retry_failed') is True)
         try:
             self.job_update(j,status='running',stage='准备资料',error='')
             p=j['product_id']
@@ -333,6 +335,7 @@ class Workbench:
                 j['done'].append(checkpoint);self.job_update(j,done=j['done'])
             self.job_update(j,status='awaiting_review',progress=100,stage='处理完成，请核查镜头内容与边界；不是最终语义验收',scan_errors=scan['errors'])
         except Exception as exc:self.job_update(j,status='failed',stage='任务停止，保留已处理记录',error=str(exc)[:1800])
+        finally:retry_incomplete.reset(retry_token)
     def process_asset(self,j,a,product):
         from montage import read,save
         from content_recognition import prepare

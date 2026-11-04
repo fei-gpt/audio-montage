@@ -5,12 +5,16 @@ import os
 import re
 import urllib.request
 import urllib.error
+from contextvars import ContextVar
+from uuid import uuid4
 from pathlib import Path
 from urllib.parse import urlparse
 from montage import read, save, fingerprint, number
 from asset_index import digest_json
 from elevenlabs_adapter import NoRedirect
 from content_recognition import content_problem, requirement_match
+
+retry_incomplete = ContextVar('retry_incomplete', default=False)
 
 
 def validate_model(base_url, model):
@@ -52,8 +56,9 @@ def call(config, prompt, evidence, cache, allow_paid):
     if not key:
         raise ValueError('缺少配置指定的 API 密钥环境变量')
     receipt = cache / (digest + '.attempt.json')
-    if receipt.exists():
-        raise ValueError('此前请求未取得完整结果，可能已计费；先核查服务端，再归档尝试记录，不自动重试')
+    retry_receipt = receipt.exists()
+    if retry_receipt and not retry_incomplete.get():
+        raise ValueError('此前请求没有完整结果。点击继续任务，并勾选“重新发送未完成请求”后重试；可能再次计费，旧记录会保留')
     content = [{'type': 'text', 'text': prompt}]
     for e in evidence:
         content.extend([{'type': 'text', 'text': f"原视频时间 {e['time']:.6f} 秒"},
@@ -64,6 +69,10 @@ def call(config, prompt, evidence, cache, allow_paid):
     body = json.dumps(payload).encode()
     if parsed.hostname == 'api.deepseek.com' and (len(evidence) > 600 or len(body) > 48 * 1024 * 1024):
         raise ValueError('超过 DeepSeek 图片数量或48MiB请求限制，未发送请求，请减少抽帧数量')
+    if retry_receipt:
+        history = cache / 'attempt-history'
+        history.mkdir(parents=True, exist_ok=True)
+        receipt.replace(history / (digest + '.' + uuid4().hex + '.attempt.json'))
     save(receipt, {'status': 'attempted', 'request_hash': digest})
     req = urllib.request.Request(endpoint, data=body,
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
@@ -71,9 +80,11 @@ def call(config, prompt, evidence, cache, allow_paid):
         with urllib.request.build_opener(NoRedirect).open(req, timeout=180) as response:
             raw = json.load(response)
     except urllib.error.HTTPError as exc:
+        save(receipt, {'status': 'http_error', 'request_hash': digest, 'http_status': exc.code})
         raise ValueError(f'视觉 API HTTP {exc.code}，不自动换模型或重试；请核查权限与模型视觉能力') from None
-    except (OSError, ValueError):
-        raise ValueError('视觉请求未完成；保留尝试记录，不自动重试') from None
+    except (OSError, ValueError) as exc:
+        save(receipt, {'status': 'response_incomplete', 'request_hash': digest, 'error_type': type(exc).__name__})
+        raise ValueError(f'视觉请求未完成（{type(exc).__name__}）；记录已保留，可在继续任务时选择重新发送') from None
     save(cache / (digest + '.raw.json'), raw)
     if not isinstance(raw, dict) or not raw.get('choices'):
         raise ValueError('响应缺少 choices，原始响应已缓存；不自动重试')
