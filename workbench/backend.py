@@ -243,6 +243,36 @@ class Workbench:
             self.store.put('product','root',target)
             return {'sources':added,'count':len(added)}
 
+    def reference_knowledge(self,p,product_ids):
+        if not isinstance(product_ids,list) or not product_ids or len(product_ids)>50:raise Problem('请选择文字语料包')
+        origins=[self.product(ident) for ident in dict.fromkeys(product_ids) if ident!=p]
+        if any(not origin.get('profile',{}).get('understood_at') for origin in origins):raise Problem('所选产品没有已理解语料')
+        results=[]
+        for origin in origins:results.append(self.store_knowledge(p,origin['name'],origin['profile'],origin['id']))
+        return {'count':len(results)}
+
+    def store_knowledge(self,p,name,profile,origin_id):
+        from workbench.knowledge import merge_profiles,remap_profile
+        import copy
+        target=self.product(p)
+        with self.lock:
+            existing=next((s for s in self.store.all('source',p) if s.get('kind')=='knowledge' and s.get('knowledge_origin')==origin_id),None)
+            if existing:return existing
+            if not isinstance(profile,dict) or not profile.get('understood_at'):raise Problem('没有可复用的文字理解结果')
+            bundle_id=uid()
+            mapping={ident:bundle_id for ident in profile.get('references',[]) if isinstance(ident,str)}
+            for s in profile.get('sources',[]):
+                if isinstance(s,dict) and isinstance(s.get('id'),str):mapping[s['id']]=bundle_id
+            # A text-only snapshot carries no source file or normalized image paths.
+            text_profile={k:copy.deepcopy(v) for k,v in profile.items() if k in {'appearance','claims','demonstrations','unknowns','conflicts','references','suggested_name','understood_at'}}
+            text_profile=remap_profile(text_profile,mapping)
+            source=self.store.put('source',p,{'id':bundle_id,'name':str(name)+' · 文字语料包','kind':'knowledge','status':'understood','pages':[],
+                'knowledge_origin':origin_id,'knowledge':text_profile,'reference':{'product_id':origin_id,'product_name':str(name)},'note':'纯文字语料快照，未重新读取图片或调用API'})
+            target['profile']=merge_profiles([target.get('profile',{}),text_profile])
+            target['profile']['understood_at']=now()
+            self.store.put('product','root',target)
+            return source
+
     def attach_library(self,p,w,path,kind):
         self.workspace(p,w)
         if kind not in {'raw','prepared'}:raise Problem('请选择原始视频或已剪素材')

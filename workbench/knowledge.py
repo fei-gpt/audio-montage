@@ -1,6 +1,23 @@
 """Reuse product knowledge without re-reading source files or calling a model."""
 import copy
 import json
+import io
+import zipfile
+
+
+def knowledge_archive(product):
+    profile=product.get('profile') or {}
+    text=[f"# {product['name']} · 产品文字语料包", '', '已保存的理解结论；宣传主张、未知项和冲突均按原记录保留。', '']
+    for key,label in [('appearance','外观'),('claims','来源宣传主张'),('demonstrations','展示方式'),('unknowns','未知项'),('conflicts','冲突')]:
+        text.extend(['## '+label,''])
+        text.extend('- '+(row if isinstance(row,str) else row.get('text',json.dumps(row,ensure_ascii=False))) for row in profile.get(key,[]))
+        text.append('')
+    payload={'format':'audio-montage-knowledge-v1','name':product['name'],'profile':profile}
+    output=io.BytesIO()
+    with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('product-knowledge.md','\n'.join(text).encode('utf-8'))
+        archive.writestr('product-knowledge.json',json.dumps(payload,ensure_ascii=False,indent=2).encode('utf-8'))
+    return output.getvalue()
 
 
 def merge_profiles(profiles):

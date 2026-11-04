@@ -46,6 +46,12 @@ class Handler(BaseHTTPRequestHandler):
                 if length>45_000_000:raise Problem('请求文件过大',413)
                 body=json.loads(self.rfile.read(length) or b'{}')
                 if not isinstance(body,dict):raise Problem('请求需要对象')
+            package=re.fullmatch(r'/api/products/([a-f0-9]+)/knowledge.zip',path)
+            if package and method=='GET':
+                from workbench.knowledge import knowledge_archive
+                product=self.app.product(package[1])
+                if not product.get('profile',{}).get('understood_at'):raise Problem('产品尚无已理解的文字语料')
+                return self.serve_bytes(knowledge_archive(product),'application/zip',f'product-{package[1][:8]}-knowledge.zip')
             return self.json(self.route(method,path,body,urllib.parse.parse_qs(url.query)))
         except Problem as exc:self.json({'error':str(exc)},exc.status)
         except (ValueError,KeyError,TypeError,IndexError) as exc:self.json({'error':'参数或记录无效：'+str(exc)[:500]},400)
@@ -81,6 +87,7 @@ class Handler(BaseHTTPRequestHandler):
             return s.put('product','root',obj)
         if tail=='sources' and method=='POST':return app.add_source(p,b)
         if tail=='sources/reference' and method=='POST':return app.reference_sources(p,b.get('selections'))
+        if tail=='knowledge/reference' and method=='POST':return app.reference_knowledge(p,b.get('product_ids'))
         if tail=='understand' and method=='POST':return app.create_job(p,None,'understand',b.get('allow_paid'))
         if tail=='workspaces' and method=='POST':return app.create_workspace(p,b.get('name',''))
         if tail and tail.startswith('jobs/') and tail.endswith('/resume') and method=='POST':return app.resume(p,None,tail.split('/')[1],b.get('allow_paid'),b.get('retry_failed',False))
@@ -101,8 +108,10 @@ class Handler(BaseHTTPRequestHandler):
         if rest=='export' and method=='POST':return app.export(p,w,b.get('shot_ids',[]))
         raise Problem('接口不存在',404)
     def media_url(self,p,w,kind,ident):return f'/api/products/{p}/workspaces/{w}/media/{kind}/{ident}?sig='+self.app.media_signature(p,w,kind,ident)
-    def serve_bytes(self,data,type_):
-        self.send_response(200);self.send_header('Content-Type',type_);self.send_header('Content-Length',str(len(data)));self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(data)
+    def serve_bytes(self,data,type_,filename=None):
+        self.send_response(200);self.send_header('Content-Type',type_);self.send_header('Content-Length',str(len(data)));self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+        if filename:self.send_header('Content-Disposition',f'attachment; filename="{filename}"')
+        self.end_headers();self.wfile.write(data)
     def serve_file(self,path):
         if not path.is_file():raise Problem('文件不存在',404)
         size=path.stat().st_size;start=0;end=size-1;status=200
