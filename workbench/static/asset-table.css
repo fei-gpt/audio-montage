@@ -1,0 +1,10 @@
+.asset-table-wrap{max-height:480px;overflow:auto;margin:16px 0;border:1px solid var(--line);border-radius:8px}
+.asset-table{width:100%;border-collapse:separate;border-spacing:0;text-align:left;font-size:13px}
+.asset-table th{position:sticky;top:0;background:#f7f9fb;z-index:1;color:var(--muted);font-weight:600}
+.asset-table th,.asset-table td{padding:7px 12px;border-bottom:1px solid var(--line)}
+.asset-table tr:last-child td{border-bottom:0}
+.asset-table td:first-child{overflow-wrap:anywhere}
+.asset-table tbody tr:hover{background:#f4faf7}
+.asset-table .asset-duration{width:100px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.asset-table .asset-action{width:86px;text-align:right;white-space:nowrap}
+.asset-table button{padding:3px 10px;font-size:12px}

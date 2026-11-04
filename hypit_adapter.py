@@ -11,6 +11,8 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
+from copy import copy
 from pathlib import Path
 from runtime_environment import configure
 
@@ -59,6 +61,28 @@ def _json_output(text):
 
 
 def analyze(args):
+    output = Path(args.output).resolve()
+    if output.exists():
+        raise ValueError(f'输出目录已存在，为避免覆盖证据请换一个目录：{output}')
+    # Node/native media tools can still hit MAX_PATH in deeply nested tasks.
+    with tempfile.TemporaryDirectory(prefix='montage-hypit-') as temporary:
+        staged = copy(args)
+        staged.output = str(Path(temporary) / 'evidence')
+        _analyze(staged)
+        manifest_path = Path(staged.output) / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        manifest['output'] = str(output)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(staged.output, output)
+        from video_document import write_document
+        from montage import fingerprint
+        write_document(args.video, fingerprint(args.video), hypit={
+            name: json.loads((output/name).read_text(encoding='utf-8'))
+            for name in ('manifest.json','probe.json','boundaries.json')})
+
+
+def _analyze(args):
     source = Path(args.video).resolve()
     if not source.is_file():
         raise ValueError(f'参考视频不存在：{source}')

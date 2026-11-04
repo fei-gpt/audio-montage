@@ -1,0 +1,7 @@
+function referenceDialog(){
+  const target=pid,current=P().sources;
+  const linked=new Set(current.map(s=>s.reference?.source_id||s.id));
+  const groups=state.products.map(p=>({product:p,sources:p.sources.filter(s=>s.status!=='failed'&&!linked.has(s.reference?.source_id||s.id))})).filter(g=>g.sources.length);
+  dialog('引用已有产品资料',`<p class="muted">选择以前上传的资料，保留原文件和来源。引用后可结合当前产品要求重新理解，不自动调用 API。</p><form id="referenceForm"><div style="max-height:380px;overflow:auto">${groups.map(g=>`<fieldset style="border:1px solid var(--line);border-radius:8px;margin:12px 0"><legend>${esc(g.product.name)}</legend>${g.sources.map(s=>`<label class="check-label"><input type="checkbox" name="source" value="${esc(g.product.id+':'+s.id)}"><span>${esc(s.name)} <span class="muted small">${esc(s.kind==='pdf'?'PDF':s.kind==='image'?'图片':'链接')}</span></span></label>`).join('')}</fieldset>`).join('')||'<p class="muted">没有尚未引用的可用资料。已有资料会继续保留在当前产品中。</p>'}</div><button class="primary" ${groups.length?'':'disabled'}>引用选中资料</button></form>`);
+  $('#referenceForm').onsubmit=e=>{e.preventDefault();const selections=new FormData(e.target).getAll('source').map(value=>{const [product_id,source_id]=value.split(':');return {product_id,source_id}});if(!selections.length){toast('请先勾选资料');return}action(async()=>{const r=await api(`/api/products/${target}/sources/reference`,'POST',{selections});$('#dialog').close();toast(`已引用 ${r.count} 份资料，可点击“理解产品资料”继续。`)})};
+}

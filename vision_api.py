@@ -80,8 +80,15 @@ def call(config, prompt, evidence, cache, allow_paid):
         with urllib.request.build_opener(NoRedirect).open(req, timeout=180) as response:
             raw = json.load(response)
     except urllib.error.HTTPError as exc:
-        save(receipt, {'status': 'http_error', 'request_hash': digest, 'http_status': exc.code})
-        raise ValueError(f'视觉 API HTTP {exc.code}，不自动换模型或重试；请核查权限与模型视觉能力') from None
+        detail=''
+        try:
+            error_body=json.loads(exc.read(8192).decode('utf-8',errors='replace'))
+            error=error_body.get('error',{})
+            if isinstance(error,dict):detail=str(error.get('message',''))
+        except (ValueError,OSError):pass
+        detail=detail.replace(key,'[redacted]')[:800]
+        save(receipt, {'status': 'http_error', 'request_hash': digest, 'http_status': exc.code, 'detail':detail})
+        raise ValueError(f'视觉 API HTTP {exc.code}：{detail or "服务端拒绝请求"}') from None
     except (OSError, ValueError) as exc:
         save(receipt, {'status': 'response_incomplete', 'request_hash': digest, 'error_type': type(exc).__name__})
         raise ValueError(f'视觉请求未完成（{type(exc).__name__}）；记录已保留，可在继续任务时选择重新发送') from None
@@ -146,6 +153,7 @@ def corrected_bounds(candidate, review, window_start, window_end):
 
 
 def analyze(args):
+    from video_document import VISUAL_PROMPT
     from types import SimpleNamespace
     from understanding import observe
     path = Path(args.task).resolve()
@@ -155,7 +163,7 @@ def analyze(args):
     if task.get('segments'):
         raise ValueError('任务已有镜头判断，使用新任务避免覆盖人工或既有结果')
     config = read(args.config)
-    standard = (Path(__file__).parent / 'CONTENT_STANDARD.md').read_text()
+    standard = (Path(__file__).parent / 'CONTENT_STANDARD.md').read_text(encoding='utf-8')
     cache = path.parent / 'vision-cache'
     outputs, batches = [], []
     record = path.parent / 'assets' / (task['source_sha256'] + '.json')
@@ -174,7 +182,7 @@ def analyze(args):
                   '先说明产品/内容展示意图，再识别真实硬切、同场景跳剪和转场，最后在单个物理镜头内选材。'
                   '同一功能展示不可掩盖切镜；工具接触产品可有演示价值，不等同于性能已被证实。'
                   '默认1–4秒；确认一镜到底且需保留完整展示效果时不受此范围限制，不机械切碎。')
-        result = call(config, prompt, frames, cache, args.allow_paid)
+        result = call(config, prompt + VISUAL_PROMPT, frames, cache, args.allow_paid)
         if not isinstance(result, dict):
             raise ValueError('模型批次响应不是 JSON 对象')
         if batches:
@@ -215,7 +223,7 @@ def analyze(args):
                 '不得因功能演示使用工具就判废，也不得把展示意图写成已经证实的性能。'
                 '按本批requirements条件ID逐项返回user结果；无法确认边界或条件则uncertain。'
                 + json.dumps(batch_requirements, ensure_ascii=False))
-            review = call(config, review_prompt, dense, cache, args.allow_paid)
+            review = call(config, review_prompt + VISUAL_PROMPT, dense, cache, args.allow_paid)
             if not isinstance(review, dict):
                 raise ValueError('模型复核响应不是 JSON 对象')
             bounds, boundary_problem = corrected_bounds(s, review, start, end)
@@ -232,7 +240,7 @@ def analyze(args):
                 observe(SimpleNamespace(record=record, start=bounds[0], end=bounds[1],
                                         every=max(.1, (bounds[1] - bounds[0]) / 12)))
                 dense = dense_frames(evidence_folder, bounds[0], bounds[1])
-            for field in ['facts', 'reason', 'use_conditions', 'content_roles', 'display_intent', 'duration_reason', 'shot_review']:
+            for field in ['facts', 'reason', 'visual_details', 'use_conditions', 'content_roles', 'display_intent', 'duration_reason', 'shot_review']:
                 if field in review:
                     s[field] = review[field]
             if isinstance(review.get('assessment'), dict):

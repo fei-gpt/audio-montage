@@ -190,6 +190,42 @@ class Workbench:
         except Exception as exc:
             s['status']='failed';s['error']=str(exc)[:800]
         return self.store.put('source',p,s)
+    def reference_sources(self,p,selections):
+        self.product(p)
+        if not isinstance(selections,list) or not selections or len(selections)>100:
+            raise Problem('请选择1–100份已有产品资料')
+        import copy
+        with self.lock:
+            prepared=[]
+            for selection in selections:
+                if not isinstance(selection,dict):raise Problem('资料引用格式无效')
+                origin=self.product(selection.get('product_id'))
+                source=self.store.get('source',selection.get('source_id'),origin['id'])
+                if source.get('status')=='failed' or source.get('kind') not in {'pdf','image','link'}:
+                    raise Problem('所选资料尚不可用')
+                for field in ('path','image'):
+                    if source.get(field):
+                        file=Path(source[field]).resolve()
+                        if not file.is_file() or self.root not in file.parents:
+                            raise Problem('引用文件已失效，请重新上传该资料')
+                origin_id=source.get('reference',{}).get('source_id',source['id'])
+                existing=next((s for s in self.store.all('source',p) if s['id']==origin_id or s.get('reference',{}).get('source_id')==origin_id),None)
+                if origin['id']==p:existing=source
+                if existing:prepared.append((existing,False));continue
+                item=copy.deepcopy(source)
+                for key in ('id','updated_at','error'):item.pop(key,None)
+                item.update(id=uid(),status='awaiting_understanding',reference={
+                    'product_id':source.get('reference',{}).get('product_id',origin['id']),
+                    'product_name':source.get('reference',{}).get('product_name',origin['name']),
+                    'source_id':origin_id})
+                prepared.append((item,True))
+            added=[]
+            for item,create in prepared:
+                duplicate=next((s for s in added if s.get('reference')==item.get('reference') and item.get('reference')),None)
+                if duplicate:continue
+                added.append(self.store.put('source',p,item) if create else item)
+            return {'sources':added,'count':len(added)}
+
     def attach_library(self,p,w,path,kind):
         self.workspace(p,w)
         if kind not in {'raw','prepared'}:raise Problem('请选择原始视频或已剪素材')
@@ -209,6 +245,19 @@ class Workbench:
             for a in self.store.all('asset'):
                 if a['workspace_id']!=w and root in Path(a['path']).resolve().parents:raise Problem('目录内已有素材属于另一账号',409)
             return self.store.put('library',w,{'path':str(root),'workspace_id':w,'kind':kind,'name':root.name})
+    def visible_assets(self,w):
+        libraries={lib['id']:Path(lib['path']).resolve() for lib in self.store.all('library',w)}
+        visible=[]
+        for asset in self.store.all('asset',w):
+            if not asset.get('available'):continue
+            root=libraries.get(asset.get('library_id'))
+            try:
+                file=Path(asset['path'])
+                if root and file.is_file() and root in file.resolve().parents:
+                    visible.append(asset)
+            except OSError:continue
+        return visible
+
     def asset_path(self,w,asset,check_hash=True):
         a=self.store.get('asset',asset,w);lib=self.store.get('library',a['library_id'],w)
         path=Path(a['path']);resolved=path.resolve();root=Path(lib['path'])
@@ -250,14 +299,20 @@ class Workbench:
                 c.execute('CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY, sha256 TEXT, path TEXT, kind TEXT, available INTEGER)')
                 for a in self.store.all('asset',w):c.execute('INSERT OR REPLACE INTO media VALUES(?,?,?,?,?)',(a['id'],a['sha256'],a['path'],a['kind'],int(a['available'])))
         return {'assets':found,'errors':errors,'count':len(found)}
-    def create_job(self,p,w,kind,allow_paid=False,extra='',rights=False):
+    def create_job(self,p,w,kind,allow_paid=False,extra='',rights=False,asset_ids=None):
         self.product(p)
         if kind=='organize':
             ws=self.workspace(p,w)
             if not ws['assigned']:raise Problem('请先分配账号，再开始整理',409)
             if not self.store.all('library',w):raise Problem('请先接入素材文件夹')
+        if asset_ids is not None:
+            if kind!='organize' or not isinstance(asset_ids,list) or not asset_ids or any(not isinstance(x,str) for x in asset_ids):
+                raise Problem('请选择有效的测试素材')
+            asset_ids=list(dict.fromkeys(asset_ids))
+            for asset_id in asset_ids:self.asset_path(w,asset_id)
         scope=w if kind=='organize' else p
         j={'id':uid(),'scope':scope,'product_id':p,'workspace_id':w,'kind':kind,'status':'queued','stage':'等待执行','done':[],'progress':0,'allow_paid':allow_paid is True,'rights_allowed':rights is True,'extra_request':str(extra)[:10000],'created_at':now()}
+        if asset_ids is not None:j['asset_ids']=asset_ids
         if not self.status()['vision_ready']:j.update(status='requires_configuration',stage='缺少识别配置：'+ '；'.join(self.status()['missing']))
         elif not j['allow_paid']:j.update(status='requires_consent',stage='需要明确允许本次向已配置模型发送资料并可能计费')
         self.store.put('job',scope,j)
@@ -326,15 +381,26 @@ class Workbench:
             if self.store.all('source',p) and (not product.get('profile') or any(s['status']=='awaiting_understanding' for s in self.store.all('source',p))):
                 self.job_update(j,progress=10,stage='先理解产品参考资料');self.understand(p,j['allow_paid']);product=self.product(p)
             assets=[a for a in self.store.all('asset',w) if a['available']]
+            if j.get('asset_ids'):
+                assets=[a for a in assets if a['id'] in j['asset_ids']]
+                if len(assets)!=len(j['asset_ids']):raise Problem('所选测试素材已失效，请重新选择')
             if not assets:raise Problem('没有可用的9:16素材：'+json.dumps(scan['errors'],ensure_ascii=False)[:400])
             for i,a in enumerate(assets):
                 checkpoint=a['id']+':'+a['sha256']
-                if checkpoint in j['done']:continue
+                if checkpoint in j['done']:
+                    from video_document import load_document
+                    cached=load_document(a['path'],a['sha256'])
+                    if cached and cached.get('complete') and cached.get('context',{}).get('visual_details'):continue
                 self.job_update(j,progress=15+int(80*i/len(assets)),stage=f"理解视频 {i+1}/{len(assets)}：{a['name']}")
                 self.process_asset(j,a,product)
-                j['done'].append(checkpoint);self.job_update(j,done=j['done'])
+                if checkpoint not in j['done']:j['done'].append(checkpoint)
+                self.job_update(j,done=j['done'])
             self.job_update(j,status='awaiting_review',progress=100,stage='处理完成，请核查镜头内容与边界；不是最终语义验收',scan_errors=scan['errors'])
-        except Exception as exc:self.job_update(j,status='failed',stage='任务停止，保留已处理记录',error=str(exc)[:1800])
+        except Exception as exc:
+            import traceback
+            from montage import save
+            save(self.root/'job-errors'/(jid+'.json'),{'error_type':type(exc).__name__,'traceback':traceback.format_exc()})
+            self.job_update(j,status='failed',stage='任务停止，保留已处理记录',error=str(exc)[:1800])
         finally:retry_incomplete.reset(retry_token)
     def process_asset(self,j,a,product):
         from montage import read,save
@@ -343,15 +409,35 @@ class Workbench:
         from understanding import observe
         w=j['workspace_id'];source=self.asset_path(w,a['id']);folder=self.wroot(w)/'tasks'/j['id']/a['id'];folder.mkdir(parents=True,exist_ok=True)
         request=RULES+'\n产品参考资料（宣传主张不能当视频实测事实）：'+json.dumps(product.get('profile',{}),ensure_ascii=False)+'\n用户补充：'+product.get('extra_request','')+'\n'+j.get('extra_request','')
+        from video_document import load_document, write_document, VISUAL_PROMPT
+        from asset_index import digest_json
+        document=load_document(source,a['sha256']) or {}
+        signature=digest_json({'request':request,'kind':a['kind'],'model':self.config()['model'],
+                               'endpoint':self.config()['base_url'],'workspace':w,'schema':2})
+        reusable=document.get('complete') is True and document.get('signature')==signature
         taskfile=folder/'task.json'
-        if not taskfile.exists():prepare(SimpleNamespace(video=str(source),request=request,output=str(folder)))
+        if not taskfile.exists():prepare(SimpleNamespace(video=str(source),request=request,output=str(folder),no_hypit=bool(document.get('hypit'))))
         task=read(taskfile)
+        if reusable:
+            task['segments']=document.get('segments',[])
+            task['analysis']=document.get('analysis',{})
+            task['requirements']=document.get('requirements',{})
+            from content_recognition import frames_between
+            for segment in task['segments']:
+                segment['evidence']=frames_between(folder,task,segment['start'],segment['end'])
+                if isinstance(segment.get('shot_review'),dict):segment['shot_review']['evidence']=segment['evidence']
         if task['source_sha256']!=a['sha256']:raise Problem('任务源文件版本已变化')
         task.update(workspace_id=w,product_id=j['product_id'],rights={'usage':'allowed' if j['rights_allowed'] else 'unknown','source':'本次用户工作台确认' if j['rights_allowed'] else '尚未确认'})
         save(taskfile,task)
-        if self.status()['hypit'] and not (folder/'hypit'/'manifest.json').exists():
+        hypit_folder=folder/'hypit-analysis'
+        if not (hypit_folder/'manifest.json').exists():hypit_folder=folder/'hypit'
+        if not document.get('hypit') and self.status()['hypit'] and not (hypit_folder/'manifest.json').exists():
             from hypit_adapter import analyze as hypit
             if not (folder/'hypit').exists():hypit(SimpleNamespace(video=str(source),output=str(folder/'hypit'),hypit=None,every=1.0,overview_frames=12,cell=360,columns=4,start=None,end=None))
+            hypit_folder=folder/'hypit'
+        if not document.get('hypit') and (hypit_folder/'manifest.json').is_file():
+            document['hypit']={name:read(hypit_folder/name) for name in ('manifest.json','probe.json','boundaries.json')}
+            write_document(source,a['sha256'],hypit=document['hypit'],complete=False)
         # Product/intent context first, then explicit cut proposals, before per-shot judgement.
         from vision_api import call
         evidence_root=folder/'evidence'/a['sha256']; overview=[]
@@ -360,13 +446,16 @@ class Workbench:
         observe(SimpleNamespace(record=str(record),start=0,end=a['duration'],every=step))
         overview=[{'time':t,'path':str(evidence_root/f'{t:.6f}.jpg')} for t in [k*step for k in range(25)] if t<a['duration'] and (evidence_root/f'{t:.6f}.jpg').exists()]
         contextfile=folder/'intent.json'
-        if not contextfile.exists():
-            context=call(self.config(),request+'\n先通览产品展示意图，只返回 {"subject":"","intent":"","visible_result":"","unknowns":[]}。采样未见不能称连续完整。',overview,folder/'vision-cache',j['allow_paid']);save(contextfile,context)
+        if reusable or (document.get('model')==self.config()['model'] and document.get('context',{}).get('visual_details')):
+            save(contextfile,document['context'])
+        if not contextfile.exists() or not read(contextfile).get('visual_details'):
+            context=call(self.config(),request+'\n先通览产品展示意图，只返回 JSON 对象 {"subject":"","intent":"","visible_result":"","visual_details":{},"unknowns":[]}。采样未见不能称连续完整。'+VISUAL_PROMPT,overview,folder/'vision-cache',j['allow_paid']);save(contextfile,context)
         else:context=read(contextfile)
         # Use mechanical candidates but require adjacent-frame visual verification, including transition intervals.
         boundaryfile=folder/'boundaries-reviewed.json'
+        if reusable:save(boundaryfile,document['boundaries'])
         if not boundaryfile.exists():
-            proc=subprocess.run(['ffmpeg','-hide_banner','-loglevel','info','-nostdin','-i',str(source),'-vf',"select='gt(scene,0.08)',showinfo",'-an','-f','null','-'],capture_output=True,text=True,timeout=300,check=True)
+            proc=subprocess.run(['ffmpeg','-hide_banner','-loglevel','info','-nostdin','-i',str(source),'-vf',"select='gt(scene,0.08)',showinfo",'-an','-f','null','-'],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=300,check=True)
             pts=[float(x) for x in re.findall(r'pts_time:([\d.]+)',proc.stderr)];groups=[]
             for t in pts:
                 if groups and t-groups[-1][-1]<.3:groups[-1].append(t)
@@ -391,15 +480,26 @@ class Workbench:
             config_path=self.root/'vision-config.json';analyze(SimpleNamespace(task=str(taskfile),config=str(config_path),allow_paid=j['allow_paid']));task=read(taskfile)
         task['analysis'].update(product_intent=context,shot_boundaries=boundaries['cuts'],shot_boundary_reviewed=not boundaries['uncertain'],transition_ranges=boundaries['transitions'])
         for seg in task['segments']:
+            if not seg.get('visual_details'):seg['visual_details']=context.get('visual_details',{})
             overlap=next((x for x in boundaries['transitions']+boundaries['uncertain'] if seg['start']<x['end'] and seg['end']>x['start']),None)
             cut=next((c for c in boundaries['cuts'] if seg['start']<c['time']<seg['end']),None)
             if overlap or cut:seg.update(decision='uncertain',boundary_reviewed=False,review_reason='选区跨切点、转场或未确认范围，需重新选区')
         save(taskfile,task)
+        write_document(source,a['sha256'],hypit=document.get('hypit',{}),complete=True,
+                       signature=signature,context=context,boundaries=boundaries,
+                       analysis=task['analysis'],segments=task['segments'],requirements=task.get('requirements',{}),
+                       model=self.config()['model'],sampling='抽帧观察，不等同于逐帧观看',
+                       scope={'workspace_id':w,'product_id':j['product_id']})
         # Previously prepared clips stay whole; no automatic destructive resplitting or inheritance of review.
         if a['kind']=='prepared':
-            segments=[{'id':'whole','start':0,'end':a['duration'],'facts':context.get('visible_result',''),'reason':'已剪素材保持整条，不自动重切；需核查内部是否跨镜头','decision':'uncertain'}]
+            whole_review=next((s for s in task['segments'] if abs(s['start'])<.001 and abs(s['end']-a['duration'])<.001),None)
+            if whole_review:
+                segments=[dict(whole_review,id='whole',start=0,end=a['duration'])]
+            else:
+                segments=[{'id':'whole','start':0,'end':a['duration'],'facts':context.get('visible_result',''),'reason':'已剪素材保持整条，不自动重切；需核查内部是否跨镜头','decision':'uncertain','candidate_reviews':task['segments']}]
         else:segments=task['segments']
         for seg in segments:
+            seg=dict(seg,visual_details=seg.get('visual_details') or context.get('visual_details',{}))
             sid=hashlib.sha256((j['id']+a['id']+str(seg['id'])).encode()).hexdigest()[:32]
             old=next((s for s in self.store.all('shot',w) if s.get('id')==sid),None)
             row=dict(seg,id=sid,segment_id=seg['id'],workspace_id=w,asset_id=a['id'],asset_sha256=a['sha256'],task_path=str(taskfile),job_id=j['id'],kind=a['kind'],review_decision=(old or {}).get('review_decision','uncertain'),stale=False)
