@@ -46,7 +46,66 @@ class Editing:
                 raise Problem('该目录属于其他账号，不能用于当前剪辑任务',403)
         return path
 
+    def upload(self,p,w,name,kind,stream,size):
+        self.app.workspace(p,w)
+        if kind not in {'narration','music','clip'}:raise Problem('上传类型无效')
+        ext=Path(name).suffix.lower()
+        allowed={'.mp4','.mov','.mkv','.webm'} if kind=='clip' else {'.mp3','.wav','.m4a','.aac','.ogg','.flac'}
+        if ext not in allowed or not 0<size<=500_000_000:raise Problem('不支持的格式、空文件或超过500MB')
+        ident=uid();folder=self.app.wroot(w)/'editing-uploads'/ident;folder.mkdir(parents=True)
+        target=folder/('media'+ext);remaining=size
+        try:
+            with target.open('xb') as out:
+                while remaining:
+                    chunk=stream.read(min(1024*1024,remaining))
+                    if not chunk:raise Problem('上传未完成，请重新选择文件')
+                    out.write(chunk);remaining-=len(chunk)
+            info=probe(target)
+            if kind=='clip':portrait_geometry(info)
+            duration=media_duration(info,'video' if kind=='clip' else 'audio')
+            if duration<=0:raise Problem('媒体没有有效时长')
+            return self.store.put('edit_upload',w,{'id':ident,'kind':kind,'name':Path(name).name[:200],
+                'path':str(target),'sha256':fingerprint(target),'duration':duration})
+        except Exception:
+            target.unlink(missing_ok=True);raise
+
+    def create_uploaded(self,p,w,body):
+        if not self.app.workspace(p,w)['assigned']:raise Problem('请先分配账号')
+        narrations=body.get('narrations',[])
+        if not isinstance(narrations,list) or not narrations or len(narrations)>100:raise Problem('请上传1–100条配音')
+        uploads=[self.store.get('edit_upload',x['id'],w) for x in narrations]
+        if any(u['kind']!='narration' for u in uploads):raise Problem('配音文件类型无效')
+        if any(len(str(n.get('script',''))) >100000 for n in narrations):raise Problem('整段文案过长')
+        clips=[]
+        for c in body.get('clips',[]):
+            u=self.store.get('edit_upload',c['id'],w)
+            if u['kind']!='clip' or c.get('position') not in {'intro','outro'}:raise Problem('请指定片段放在开头或结尾')
+            clips.append(dict(u,position=c['position']))
+        music=self.store.get('edit_upload',body['music_id'],w) if body.get('music_id') else None
+        if music and music['kind']!='music':raise Problem('背景音乐类型无效')
+        mode=body.get('mode','preview');language=body.get('language','auto')
+        if mode not in {'preview','direct'} or language not in {'auto','en','es','zh'}:raise Problem('输出方式或语言无效')
+        bid=uid();root=self.folder(w,bid);root.mkdir(parents=True)
+        output=self.directory(w,body['output_path'])/('剪辑输出_'+bid[:8]) if body.get('output_path') else root/'outputs'
+        gain=body.get('music_volume',15)
+        if type(gain) not in (int,float) or not 0<=gain<=100:raise Problem('音乐音量应为0–100')
+        batch={'id':bid,'product_id':p,'workspace_id':w,'input_mode':'uploads','input_path':str(root),
+            'output_path':str(output),'created_at':now(),'clips':clips,'music':music,
+            'rules':{'mode':mode,'language':language,'keep_original_audio':body.get('keep_original_audio') is True,
+                'rights_allowed':body.get('rights_allowed') is True,'model_path':str(body.get('model_path','')),
+                'request':str(body.get('request',''))[:10000],'music_volume':gain/100,
+                'width':1080,'height':1920,'fps':30,'batch_dedup':True,'auto_preview':body.get('auto_preview') is True},
+            'product_profile':self.app.product(p).get('profile',{})}
+        for n,u in zip(narrations,uploads):
+            script=str(n.get('script','')).strip()
+            if len(script)>100000:raise Problem('整段文案过长')
+            self.store.put('edit_task',w,{'id':uid(),'batch_id':bid,'product_id':p,'workspace_id':w,
+                'name':u['name'],'audio':u['path'],'audio_sha256':u['sha256'],'audio_duration':u['duration'],
+                'script':script,'status':'ready','stage':'等待识别配音时间轴与规划','created_at':now()})
+        save(root/'rules.json',batch);return self.store.put('edit_batch',w,batch)
+
     def create(self,p,w,body):
+        if 'narrations' in body:return self.create_uploaded(p,w,body)
         ws=self.app.workspace(p,w)
         if not ws['assigned']:raise Problem('请先分配账号')
         root=self.directory(w,body.get('input_path',''));bid=uid()
@@ -83,6 +142,14 @@ class Editing:
         return self.store.put('edit_batch',w,batch)
 
     def check_inputs(self,b,t):
+        if b.get('input_mode')=='uploads':
+            inputs=[{'path':t['audio'],'sha256':t['audio_sha256']}]+b.get('clips',[])+([b['music']] if b.get('music') else [])
+            root=self.app.wroot(t['workspace_id'])/'editing-uploads'
+            for u in inputs:
+                file=Path(u['path']).resolve()
+                if not file.is_relative_to(root) or not file.is_file() or fingerprint(file)!=u['sha256']:raise ValueError('上传文件已变化或不可用，请重新上传')
+            for c in b.get('clips',[]):portrait_geometry(probe(c['path']))
+            return
         root=self.directory(t['workspace_id'],b['input_path'])
         for field in ('intro','audio'):
             f=Path(t[field]).resolve()
@@ -103,16 +170,16 @@ class Editing:
                 data=read(source);sha=data.get('audio_sha256') or data.get('provenance',{}).get('audio_sha256')
                 if sha and sha!=t['audio_sha256']:raise ValueError('提供的时间轴属于其他音频')
             else:sha=None
-            if not sha and not b['rules']['timing_confirmed']:raise ValueError('已有字幕未绑定音频指纹，请确认同名字幕对应当前音频后创建批次')
+            if not sha and not b['rules'].get('timing_confirmed'):raise ValueError('已有字幕未绑定音频指纹，请确认同名字幕对应当前音频后创建批次')
             segments=timing(source)
             data={'segments':segments,'source':'import','timing_file_sha256':fingerprint(source),'human_reviewed':False}
         else:
             model=Path(b['rules']['model_path'])
-            if not b['rules']['model_path'] or not model.is_dir():raise ValueError('缺少同名 SRT/JSON；请配置本地 Whisper 模型目录，不会调用云端转写')
+            if not b['rules']['model_path'] or not model.is_dir():raise ValueError('请配置本地 Whisper 模型以识别配音时间轴；整段文案用于核对，不会按字数猜测时间')
             from montage import init,transcribe
             folder=cache/('transcribe-'+key)
             if not (folder/'project.json').exists():init(SimpleNamespace(project=str(folder),audio=t['audio'],width=1080,height=1920,fps=30,language=b['rules']['language'],keep_original_audio=False))
-            if not (folder/'audio/timing.json').exists():transcribe(SimpleNamespace(project=str(folder),model=str(model),language=b['rules']['language'],prompt=''))
+            if not (folder/'audio/timing.json').exists():transcribe(SimpleNamespace(project=str(folder),model=str(model),language=b['rules']['language'],prompt=t.get('script','')[:2000]))
             data=read(folder/'audio/timing.json');data['source']='local_transcription';data['human_reviewed']=False
         check_segments(data['segments'],t['audio_duration'])
         data['audio_sha256']=t['audio_sha256'];save(dest,data);return data
@@ -179,7 +246,7 @@ class Editing:
                 '保持原速，不循环，不用无关画面。所有parts的frames之和必须等于所需帧数；已使用的素材重叠区间不能再选。'
                 '缺少合适画面或无法精确覆盖时返回parts空数组及gaps说明，不得编造。按景别、背景、主体动作安排衔接，不能把同产品当作同画面。\n'+
                 json.dumps({'timing':timeline['segments'],'required_frames':math.ceil(t['audio_duration']*30-1e-7),
-                            'product':b['product_profile'],'rules':b['rules']['request'],'candidates':candidates,'used':used},ensure_ascii=False))
+                            'product':b['product_profile'],'supplied_script':t.get('script',''),'rules':b['rules']['request'],'candidates':candidates,'used':used},ensure_ascii=False))
         from vision_api import call
         cache=self.folder(t['workspace_id'],t['batch_id'])/t['id']/'api-cache';cache.mkdir(parents=True,exist_ok=True)
         proposal=call(self.app.config(),prompt,[],cache,allow_paid)
@@ -206,13 +273,14 @@ class Editing:
         from workbench.edit_media import render
         if preview:folder=self.folder(t['workspace_id'],t['batch_id'])/t['id']/('preview-'+uid())
         else:folder=Path(b['output_path'])/(t['name']+'-'+t['id'][:8]+'-'+uid()[:8])
-        out,report=render(t['intro'],t['audio'],parts,folder,preview,b['rules']['keep_original_audio'],lambda:self.check_stop(t['workspace_id'],t['id']))
+        out,report=render(t.get('intro'),t['audio'],parts,folder,preview,b['rules']['keep_original_audio'],lambda:self.check_stop(t['workspace_id'],t['id']),
+            clips=b.get('clips',[]),music=b.get('music'),music_volume=b['rules'].get('music_volume',.15))
         self.check_inputs(b,t)
         report['human_reviewed']=bool(t.get('human_reviewed')) if not preview else False
         save(folder/'validation.json',report)
         key='preview' if preview else 'output';t[key]={'path':str(out),'sha256':fingerprint(out),'report':report,'plan_revision':t['plan_revision']}
         if not preview:
-            save(folder/'制作记录.json',{'rules':b['rules'],'input':{k:t[k] for k in ('intro','audio','intro_sha256','audio_sha256')},
+            save(folder/'制作记录.json',{'rules':b['rules'],'input':{k:t[k] for k in ('intro','audio','intro_sha256','audio_sha256','script') if k in t},'clips':b.get('clips',[]),'music':b.get('music'),
                                       'timeline':t['timeline'],'plan':t['plan'],'validation':report,'human_reviewed':t.get('human_reviewed',False)})
             offset=report['intro_seconds'];segments=t['timeline']['segments']
             (folder/'captions.srt').write_text('\n\n'.join(f'{i}\n{srt_time(s["start"]+offset)} --> {srt_time(s["end"]+offset)}\n{s["text"]}' for i,s in enumerate(segments,1))+'\n',encoding='utf-8')
@@ -272,6 +340,8 @@ class Editing:
                     with self.app.lock:
                         self.check_stop(w,tid);self.store.put('edit_task',w,t)
                     if b['rules']['mode']=='direct':t=self.render(b,t,False);t.update(status='completed',stage='已输出，未人工审片')
+                    elif b['rules'].get('auto_preview'):
+                        t=self.render(b,t,True);t.update(status='awaiting_review',stage='预览已生成，请核对画面与配音时间轴')
                     else:t.update(status='planned',stage='选片已规划，请生成预览')
                 elif operation=='preview':t=self.render(b,t,True);t.update(status='awaiting_review',stage='预览已生成，请核对画面与配音时间轴')
                 else:t=self.render(b,t,False);t.update(status='completed',stage='已输出'+('，已确认当前预览' if t.get('human_reviewed') else '，未人工审片'))

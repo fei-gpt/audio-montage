@@ -22,7 +22,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(root, endpoint, fields, audio, allow_paid):
+def request(root, endpoint, fields, audio, allow_paid, api_key_value=None):
     signature = {'endpoint': endpoint, 'fields': fields,
                  'audio_sha256': fingerprint(audio) if audio else None}
     digest = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()
@@ -35,7 +35,7 @@ def request(root, endpoint, fields, audio, allow_paid):
         raise ValueError('新请求将向 ElevenLabs 发送文稿或音频并可能计费；明确接受后添加 --allow-paid。未发送请求。')
     if receipt.exists():
         raise ValueError('此请求已有尝试记录但无完整结果，可能已计费；请先核查 ElevenLabs，再手动归档 request.json 后重试。')
-    key = os.environ.get('ELEVENLABS_API_KEY')
+    key = api_key_value or os.environ.get('ELEVENLABS_API_KEY')
     if not key:
         raise ValueError('请设置 ELEVENLABS_API_KEY 环境变量，不要把密钥写入项目')
     if audio:

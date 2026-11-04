@@ -1,5 +1,5 @@
 """Scoped editing acceptance with real local media and mocked semantic requests."""
-import json,shutil,tempfile,unittest
+import io,json,shutil,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
 from montage import fingerprint,save
@@ -42,6 +42,30 @@ class EditingTest(unittest.TestCase):
         ids=[t['id'] for t in self.app.editing.tasks(self.w['id'],b['id']) if t['status']=='queued']
         self.app.editing.run(self.p['id'],self.w['id'],b['id'],ids,op)
     def proposal(self):return {'parts':[{'shot_id':self.shot['id'],'start':0,'frames':60,'reason':'red toy matches narration'}],'gaps':[]}
+    def upload(self,file,kind,w=None):
+        return self.app.editing.upload(self.p['id'],(w or self.w)['id'],file.name,kind,io.BytesIO(file.read_bytes()),file.stat().st_size)
+    def test_uploaded_audio_only_reuses_library_and_preserves_script(self):
+        narration=self.upload(self.audio,'narration')
+        b=self.app.editing.create(self.p['id'],self.w['id'],{'narrations':[{'id':narration['id'],'script':'Show the red toy.'}],'rights_allowed':True})
+        t=self.task(b);self.assertNotIn('intro',t);self.assertEqual(t['script'],'Show the red toy.')
+        self.app.editing.check_inputs(b,t)
+        # Existing real audio timing is reusable even when its media filename changes after upload.
+        cache=self.app.wroot(self.w['id'])/'editing-audio';save(cache/(t['audio_sha256']+'-auto.json'),{'audio_sha256':t['audio_sha256'],'segments':[{'start':0,'end':2,'text':'Show the red toy.'}]})
+        with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')
+        self.op(b,'preview');t=self.task(b);self.assertEqual(t['status'],'awaiting_review',t.get('error'))
+        self.assertEqual(t['preview']['report']['intro_seconds'],0);self.assertEqual(t['preview']['report']['duration'],2)
+    def test_uploaded_bookends_music_and_account_scope(self):
+        n=self.upload(self.audio,'narration');music=self.upload(self.audio,'music');clip=self.upload(self.intro,'clip')
+        with self.assertRaises(Problem):self.app.editing.create(self.p['id'],self.w2['id'],{'narrations':[{'id':n['id']}]})
+        b=self.app.editing.create(self.p['id'],self.w['id'],{'narrations':[{'id':n['id'],'script':'red toy'}],'music_id':music['id'],
+            'clips':[{'id':clip['id'],'position':'intro'},{'id':clip['id'],'position':'outro'}],'rights_allowed':True})
+        t=self.task(b);t['timeline']={'segments':[{'start':0,'end':2,'text':'red toy'}]};t['plan']=self.app.editing.validate_plan(b,t,self.proposal());t['plan_revision']='r';t['status']='running';self.app.store.put('edit_task',self.w['id'],t)
+        result=self.app.editing.render(b,t,True);report=result['preview']['report']
+        self.assertEqual(report['intro_seconds'],1);self.assertEqual(report['outro_seconds'],1);self.assertEqual(report['duration'],4)
+        self.assertTrue(report['music_body_only']);self.assertFalse(report['music_looped']);self.assertEqual(report['music_volume'],.15)
+    def test_upload_rejects_invalid_or_incomplete_media(self):
+        with self.assertRaises(Problem):self.app.editing.upload(self.p['id'],self.w['id'],'x.exe','clip',io.BytesIO(b'bad'),3)
+        with self.assertRaises(Problem):self.app.editing.upload(self.p['id'],self.w['id'],'x.mp3','narration',io.BytesIO(b'bad'),10)
     def test_preview_confirmation_and_output(self):
         b=self.create()
         with patch('vision_api.call',return_value=self.proposal()) as api:self.op(b,'plan');self.assertEqual(api.call_count,1)

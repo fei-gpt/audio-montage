@@ -30,7 +30,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self,method):
         try:
             self.guard();url=urllib.parse.urlsplit(self.path);path=url.path
-            media=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/media/(asset|export|edit)/([a-f0-9-]+)',path)
+            media=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/media/(asset|export|edit|gen)/([a-f0-9-]+)',path)
             if media and method=='GET':
                 p,w,k,ident=media.groups();sig=urllib.parse.parse_qs(url.query).get('sig',[''])[0];return self.serve_file(self.app.media(p,w,k,ident,sig))
             if not path.startswith('/api/'):
@@ -41,6 +41,12 @@ class Handler(BaseHTTPRequestHandler):
                     data=file.read_text(encoding='utf-8').replace('/*BOOTSTRAP*/',f'window.WORKBENCH_TOKEN={json.dumps(self.server.token)};').encode('utf-8');return self.serve_bytes(data,'text/html; charset=utf-8')
                 return self.serve_file(file)
             self.token();body={}
+            upload=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/editing/uploads',path)
+            if upload and method=='POST':
+                p,w=upload.groups()
+                result=self.app.editing.upload(p,w,urllib.parse.unquote(self.headers.get('X-File-Name','')),
+                    self.headers.get('X-Upload-Kind',''),self.rfile,int(self.headers.get('Content-Length','0')))
+                return self.json({k:v for k,v in result.items() if k!='path'})
             if method!='GET':
                 length=int(self.headers.get('Content-Length','0'))
                 if length>45_000_000:raise Problem('请求文件过大',413)
@@ -68,6 +74,9 @@ class Handler(BaseHTTPRequestHandler):
                     w.update(libraries=s.all('library',w['id']),assets=s.all('asset',w['id']),shots=s.all('shot',w['id']),jobs=s.all('job',w['id']),exports=s.all('export',w['id']))
                     w['assets']=app.visible_assets(w['id'])
                     w['editing_batches']=app.editing.list(p['id'],w['id'])
+                    w['generations']=s.all('generation',w['id'])
+                    for g in w['generations']:
+                        if g.get('intro'):g['intro']['media_url']=self.media_url(p['id'],w['id'],'gen',g['id'])
                     for batch in w['editing_batches']:
                         for task in batch['tasks']:
                             for key,index in [('preview','0'),('output','1')]:
@@ -75,7 +84,11 @@ class Handler(BaseHTTPRequestHandler):
                     for a in w['assets']:a['media_url']=self.media_url(p['id'],w['id'],'asset',a['id'])
                     for e in w['exports']:
                         for i,f in enumerate(e['files']):f['media_url']=self.media_url(p['id'],w['id'],'export',e['id']+'-'+str(i))
-            return {'products':products,'capabilities':app.status()}
+            return {'products':products,'capabilities':app.status(),'generation_config':app.generation.status()}
+        if path=='/api/generation/settings':
+            if method=='GET':return app.generation.status()
+            if method=='POST':return app.generation.settings(b)
+        if path=='/api/generation/voices' and method=='GET':return app.generation.voices()
         if path=='/api/settings' and method=='POST':return app.set_config(b)
         if path=='/api/products' and method=='POST':return app.create_product(b.get('name',''))
         if path=='/api/migrate' and method=='POST':return app.migrate(b)
@@ -100,6 +113,12 @@ class Handler(BaseHTTPRequestHandler):
         m=re.fullmatch(r'workspaces/([a-f0-9]+)(?:/(.*))?',tail or '')
         if not m:raise Problem('接口不存在',404)
         w,rest=m.groups();ws=app.workspace(p,w)
+        if rest=='generation' and method=='POST':return app.generation.create(p,w,b)
+        gen=re.fullmatch(r'generation/([a-f0-9]{32})(?:/([a-z-]+))?',rest or '')
+        if gen:
+            gid,op=gen.groups()
+            if method=='GET' and op is None:return app.generation.get(p,w,gid)
+            if method=='POST' and op:return app.generation.action(p,w,gid,op,b)
         if rest=='editing/batches':
             if method=='POST':return app.editing.create(p,w,b)
             if method=='GET':return app.editing.list(p,w)
@@ -169,6 +188,6 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8766);parser.add_argument('--data',default=str(REPO/'.workbench-data'));args=parser.parse_args()
     server=make_server(args.data,args.port);print(f'素材工作台 http://127.0.0.1:{server.server_port}',flush=True)
     try:server.serve_forever()
-    finally:server.app.pool.shutdown(wait=False,cancel_futures=True);server.server_close()
+    finally:server.app.generation.close();server.app.pool.shutdown(wait=False,cancel_futures=True);server.server_close()
 
 if __name__=='__main__':main()

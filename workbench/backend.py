@@ -117,6 +117,8 @@ class Workbench:
                 j.update(status='interrupted',stage='服务重启，已保留进度；可继续任务'); self.store.put('job',j['scope'],j)
         from workbench.editing import Editing
         self.editing=Editing(self)
+        from workbench.generation import Generation
+        self.generation=Generation(self)
     def product(self,p):
         product=self.store.get('product',p,'root')
         owner=product;seen={p}
@@ -673,6 +675,7 @@ class Workbench:
         self.workspace(p,w)
         if not hmac.compare_digest(sig,self.media_signature(p,w,kind,ident)):raise Problem('无效媒体签名',403)
         if kind=='edit':return self.editing.media(p,w,ident)
+        if kind=='gen':return self.generation.media(p,w,ident)
         if kind=='asset':return self.asset_path(w,ident)
         if kind=='export':
             record_id,index=ident.rsplit('-',1);e=self.store.get('export',record_id,w);path=Path(e['files'][int(index)]['path']).resolve()
