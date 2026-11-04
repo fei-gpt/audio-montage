@@ -14,6 +14,9 @@ import textwrap
 import difflib
 from pathlib import Path
 from fractions import Fraction
+from runtime_environment import configure
+
+configure()
 
 
 def run(args):

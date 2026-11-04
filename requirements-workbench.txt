@@ -1,2 +1,3 @@
 # Pure-Python PDF text extraction. Existing FFmpeg/ffprobe are also required.
 pypdf==6.1.1
+pypdfium2==5.0.0

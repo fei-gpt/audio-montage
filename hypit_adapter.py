@@ -12,6 +12,9 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from runtime_environment import configure
+
+configure()
 
 
 def _hypit_command(value):

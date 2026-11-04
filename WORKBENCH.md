@@ -2,6 +2,12 @@
 
 ## 启动
 
+Windows 可双击 `start-workbench.cmd` 启动（8768）。项目会自动加载 `.media-runtime/bin` 中的 FFmpeg/ffprobe，子进程与 Hypit 使用同一 PATH。可用 `MONTAGE_MEDIA_BIN` 指定完整媒体工具目录。
+
+Windows 上已有完整 FFmpeg 时，可运行 `scripts/install-media.ps1 -SourceDirectory 'FFmpeg的bin目录'` 复制到项目运行时。安装脚本校验 libx264、保留共享 DLL，并记录文件来源与 SHA256。运行时目录不提交 Git。PDF 依赖由 `requirements-workbench.txt` 安装，扫描 PDF 使用 pypdfium2 渲染，无需额外安装 Poppler。
+
+识别服务设置支持直接输入 API 密钥，保存后立即生效、重启后保留。密钥存于本机工作台数据目录的 `credentials.json`，不回显到页面；备份数据目录时需一并保护该文件。留空保存会保留原密钥。环境变量方式继续兼容。
+
 在仓库目录运行（Python 3.10+，已安装 FFmpeg/ffprobe）：
 
 ```sh

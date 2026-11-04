@@ -19,6 +19,20 @@ def same_location(a,b):
 
 def now(): return time.strftime('%Y-%m-%dT%H:%M:%S%z')
 
+
+def credential_env_name(value):
+    """Accept common shell references, but never treat a credential as a name."""
+    name = str(value or '').strip()
+    if name.startswith('${') and name.endswith('}'):
+        name = name[2:-1].strip()
+    elif name.lower().startswith('$env:'):
+        name = name[5:].strip()
+    elif name.startswith('$'):
+        name = name[1:].strip()
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+        raise Problem('这里填写变量名，例如 DEEPSEEK_API_KEY；密钥值请填写在仓库 .env.workbench 的 DEEPSEEK_API_KEY= 后面')
+    return name
+
 def digest(p):
     h=hashlib.sha256()
     with Path(p).open('rb') as f:
@@ -117,7 +131,8 @@ class Workbench:
     def status(self):
         cfg=self.config(); missing=[]
         if not cfg.get('base_url') or not cfg.get('model') or cfg.get('model','').startswith('YOUR'): missing.append('视觉API地址与模型')
-        if not os.environ.get(cfg.get('api_key_env','VISION_API_KEY')): missing.append('API密钥环境变量 '+cfg.get('api_key_env','VISION_API_KEY'))
+        from vision_api import api_key
+        if not api_key(cfg): missing.append('API 密钥（请在识别服务设置中填写）')
         import importlib.util
         from hypit_adapter import _hypit_command
         try: hypit_path=_hypit_command(None)
@@ -134,10 +149,19 @@ class Workbench:
         from vision_api import validate_model
         try: validate_model(url,str(cfg['model']).strip())
         except ValueError as exc: raise Problem(str(exc))
-        env=str(cfg.get('api_key_env','VISION_API_KEY'))
-        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',env):raise Problem('密钥环境变量名无效')
+        env=credential_env_name(cfg.get('api_key_env','DEEPSEEK_API_KEY' if u.hostname=='api.deepseek.com' else 'VISION_API_KEY'))
         result={'base_url':url,'model':str(cfg['model']).strip(),'api_key_env':env}
-        from montage import save
+        from montage import save, read
+        secret_file=self.root/'credentials.json'
+        key=str(cfg.get('api_key') or '').strip()
+        if key:
+            if len(key)>4096 or any(c.isspace() for c in key):
+                raise Problem('API 密钥格式无效，请粘贴完整密钥且不要包含空格或换行')
+            secrets_map=read(secret_file) if secret_file.exists() else {}
+            secrets_map[env]=key
+            save(secret_file,secrets_map)
+            secret_file.chmod(0o600)
+        if secret_file.exists():result['api_key_file']=str(secret_file)
         save(self.root/'vision-config.json',result);return self.status()
     def add_source(self,p,body):
         self.product(p);s={'id':uid(),'name':str(body.get('name','参考资料'))[:200],'status':'extracting','pages':[],'note':''}
@@ -258,11 +282,11 @@ class Workbench:
         for s in usable:
             if s.get('image'):evidence.append({'time':len(evidence),'path':s['image']})
             if s['kind']=='pdf' and not any(x['text'].strip() for x in s.get('pages',[])):
-                if not shutil.which('pdftoppm'):raise Problem('扫描PDF需要pdftoppm，请提供可提取文字PDF或产品图片')
                 folder=self.root/'products'/p/'pdf-pages'/s['id'];folder.mkdir(parents=True,exist_ok=True)
                 # Do not silently analyze a partial PDF as the complete document.
                 if len(s['pages'])>20:raise Problem('扫描PDF超过20页，请提供重点页，不能静默截断资料')
-                subprocess.run(['pdftoppm','-jpeg','-scale-to','1400',s['path'],str(folder/'page')],check=True,capture_output=True,timeout=120)
+                from workbench.pdf_pages import render_pdf
+                render_pdf(s['path'], folder)
                 for page in sorted(folder.glob('page-*.jpg')):evidence.append({'time':len(evidence),'path':str(page)})
         source_text=[{'id':s['id'],'name':s['name'],'pages':s.get('pages',[]),'text':s.get('text',''),'note':s.get('note',''),'image_position':next((i for i,e in enumerate(evidence) if e['path']==s.get('image')),None), 'image_pages':[{'image_position':i,'page':int(Path(e['path']).stem.split('-')[-1])} for i,e in enumerate(evidence) if s['kind']=='pdf' and s['id'] in e['path']]} for s in usable]
         if len(evidence)>30:raise Problem('单次资料图片超过30张，请分批添加重点资料')

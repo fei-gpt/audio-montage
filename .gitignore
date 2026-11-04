@@ -47,4 +47,5 @@ qa/
 .workbench-data-qa/
 
 .hypit-runtime/
+.media-runtime/
 .env.workbench

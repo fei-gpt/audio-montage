@@ -5,6 +5,8 @@ from functools import partial
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 REPO=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(REPO));sys.path.insert(0,str(REPO/'.workbench-deps'))
+from runtime_environment import configure
+configure()
 from workbench.backend import Workbench, Problem
 STATIC=Path(__file__).parent/'static'
 
@@ -129,7 +131,7 @@ def make_server(root,port=8767):
 def load_local_env(path):
     """Read only named credentials, never execute shell content or replace process values."""
     if not path.exists(): return
-    for line in path.read_text(encoding='utf-8').splitlines():
+    for line in path.read_text(encoding='utf-8-sig').splitlines():
         line=line.strip()
         if not line or line.startswith('#'): continue
         key,sep,value=line.partition('=')

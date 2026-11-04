@@ -19,6 +19,16 @@ def validate_model(base_url, model):
         raise ValueError('DeepSeek 官方视觉接入请选择 deepseek-flash；不将其他模型名视为支持图片，也不自动换模型')
 
 
+def api_key(config):
+    env = config.get('api_key_env', 'VISION_API_KEY')
+    file = config.get('api_key_file')
+    if file and Path(file).is_file():
+        value = read(file).get(env)
+        if value:
+            return value
+    return os.environ.get(env)
+
+
 def call(config, prompt, evidence, cache, allow_paid):
     validate_model(config['base_url'], config['model'])
     endpoint = config['base_url'].rstrip('/') + '/chat/completions'
@@ -30,7 +40,7 @@ def call(config, prompt, evidence, cache, allow_paid):
     missing = [e['path'] for e in evidence if not Path(e['path']).is_file()]
     if missing:
         raise ValueError('证据图片缺失，未发送请求；请重新抽取证据：' + missing[0])
-    key = os.environ.get(config.get('api_key_env', 'VISION_API_KEY'))
+    key = api_key(config)
     identity = {'endpoint': endpoint, 'model': config['model'], 'prompt': prompt,
                 'frames': [(e['time'], fingerprint(e['path'])) for e in evidence]}
     digest = digest_json(identity)
