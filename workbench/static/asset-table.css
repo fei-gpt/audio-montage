@@ -8,3 +8,5 @@
 .asset-table .asset-duration{width:100px;white-space:nowrap;font-variant-numeric:tabular-nums}
 .asset-table .asset-action{width:86px;text-align:right;white-space:nowrap}
 .asset-table button{padding:3px 10px;font-size:12px}
+.shot-list{display:block;width:100%}
+.shot-summary{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:620px;line-height:1.5}
