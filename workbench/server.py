@@ -36,7 +36,7 @@ class Handler(BaseHTTPRequestHandler):
                 name=urllib.parse.unquote(path).lstrip('/') or 'index.html';file=(STATIC/name).resolve()
                 if STATIC.resolve() not in file.parents:raise Problem('路径不存在',404)
                 if name=='index.html':
-                    data=file.read_text().replace('/*BOOTSTRAP*/',f'window.WORKBENCH_TOKEN={json.dumps(self.server.token)};').encode();return self.serve_bytes(data,'text/html; charset=utf-8')
+                    data=file.read_text(encoding='utf-8').replace('/*BOOTSTRAP*/',f'window.WORKBENCH_TOKEN={json.dumps(self.server.token)};').encode('utf-8');return self.serve_bytes(data,'text/html; charset=utf-8')
                 return self.serve_file(file)
             self.token();body={}
             if method!='GET':
@@ -129,7 +129,7 @@ def make_server(root,port=8767):
 def load_local_env(path):
     """Read only named credentials, never execute shell content or replace process values."""
     if not path.exists(): return
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding='utf-8').splitlines():
         line=line.strip()
         if not line or line.startswith('#'): continue
         key,sep,value=line.partition('=')

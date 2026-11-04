@@ -125,7 +125,7 @@ class Workbench:
         return {'hypit':bool(hypit_path), 'hypit_path':hypit_path, 'ffmpeg':bool(shutil.which('ffmpeg')),'pdf_text':bool(importlib.util.find_spec('pypdf')),'vision_ready':not missing,'missing':missing,'config':cfg}
     def config(self):
         path=self.root/'vision-config.json'
-        return json.loads(path.read_text()) if path.exists() else {'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key_env':'DEEPSEEK_API_KEY'}
+        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key_env':'DEEPSEEK_API_KEY'}
     def set_config(self,cfg):
         url=str(cfg.get('base_url','')).rstrip('/');u=urllib.parse.urlsplit(url)
         if u.scheme!='https' and not(u.scheme=='http' and u.hostname in {'127.0.0.1','localhost','::1'}): raise Problem('模型地址须为HTTPS，本机转接允许HTTP')
