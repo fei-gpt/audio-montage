@@ -67,10 +67,8 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/products' and method=='POST':return app.create_product(b.get('name',''))
         if path=='/api/migrate' and method=='POST':return app.migrate(b)
         if path=='/api/choose-folder' and method=='POST':
-            if sys.platform=='darwin':
-                result=subprocess.run(['osascript','-e','POSIX path of (choose folder with prompt "选择已有视频素材库（原文件不会移动）")'],text=True,capture_output=True,timeout=180)
-                return {'path':result.stdout.strip(),'cancelled':result.returncode!=0}
-            return {'manual':True,'message':'当前平台请填写素材文件夹绝对路径'}
+            from workbench.folder_picker import choose_folder
+            return choose_folder(b.get('initial',''))
         m=re.fullmatch(r'/api/products/([a-f0-9]+)(?:/(.*))?',path)
         if not m:raise Problem('接口不存在',404)
         p,tail=m.groups();app.product(p)
