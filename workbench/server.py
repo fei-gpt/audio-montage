@@ -84,7 +84,8 @@ class Handler(BaseHTTPRequestHandler):
                     for a in w['assets']:a['media_url']=self.media_url(p['id'],w['id'],'asset',a['id'])
                     for e in w['exports']:
                         for i,f in enumerate(e['files']):f['media_url']=self.media_url(p['id'],w['id'],'export',e['id']+'-'+str(i))
-            return {'products':products,'capabilities':app.status(),'generation_config':app.generation.status()}
+            from workbench.local_asr import status as asr_status
+            return {'products':products,'capabilities':app.status(),'generation_config':app.generation.status(),'editing_capabilities':{'local_asr':asr_status()}}
         if path=='/api/generation/settings':
             if method=='GET':return app.generation.status()
             if method=='POST':return app.generation.settings(b)

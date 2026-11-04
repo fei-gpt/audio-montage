@@ -322,7 +322,9 @@ def transcribe(args):
         raise ValueError('音频为空或接近静音，停止转写以避免生成幻觉字幕')
     results, detected = model.transcribe(samples, language=None if language == 'auto' else language,
                                   task='transcribe', word_timestamps=True, condition_on_previous_text=False,
-                                  initial_prompt=args.prompt)
+                                  initial_prompt=args.prompt,
+                                  vad_filter=getattr(args,'vad_filter',False),
+                                  hallucination_silence_threshold=1.0 if getattr(args,'vad_filter',False) else None)
     segments = [{'start': s.start, 'end': s.end, 'text': s.text.strip(),
                  'words': [{'start': w.start, 'end': w.end, 'text': w.word} for w in (s.words or [])]}
                 for s in results if s.text.strip()]

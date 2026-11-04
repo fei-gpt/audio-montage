@@ -5,10 +5,12 @@
 ## 输入与规则
 
 - 新建任务使用三个上传框：配音（必选，可多条）、背景音乐（可选一条）、开头／结尾视频（可选多条，每条指定位置）。素材库直接使用当前产品和账号已确认的镜头，无需再上传。
-- 每条配音可填写整段文案，用作识别提示、内容核对和选片上下文；不要求字幕文件，不按字数猜测时间戳。每条配音生成一条视频，共用本次音乐和开头／结尾配置。
+- 每条配音可填写整段文案，用作内容核对和选片上下文；不要求字幕文件，不按字数猜测时间戳。先独立识别音频，再对比文案，避免整段提示诱发转写补词。每条配音生成一条视频，共用本次音乐和开头／结尾配置。
 - 开头／结尾保持完整画面、原速和原声；主体素材原声默认关闭。背景音乐默认15%音量，仅混入配音对应的主体部分；音乐短于主体时不循环，剩余部分保留配音。
 - 输出严格 1080×1920、30fps，不接纳非 9:16 输入，不循环、补画面或变速。仅为统一输出格式编码，开头／结尾不参加语义切片。
-- 时间轴来自本地 faster-whisper。高级设置可填写已有模型目录；需 Python 安装 faster-whisper。模型仅本地加载，不自动下载，也不自动调用云端转写。旧目录配对批次与已有SRT/JSON导入继续兼容，但不再作为新建页面的常规入口。
+- 上传创建后自动启动本地时间轴识别，不调用选片或生成API。识别完成标记“配音时间轴已识别”，查看详情可核对文字及文案差异，然后明确允许规划选片。
+- 默认使用独立 `.asr-runtime` 中的 faster-whisper 和多语言 base 模型，无需每次填写模型路径。首次安装执行 `powershell -ExecutionPolicy Bypass -File scripts/install-asr.ps1`，日常任务只读本地模型，不自动下载、不改用云端转写。高级设置仍允许自定义模型目录。
+- 网络受限时安装器支持 `-IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple -ModelEndpoint https://hf-mirror.com`；安装记录保留模型版本、来源和文件指纹。可用 `-CheckOnly` 检查依赖。旧目录配对批次与已有SRT/JSON导入继续兼容，不再作为新建页面常规入口。
 - 音频时间轴按账号、音频 SHA-256、语言缓存。视频旁原有分析 JSON 不会被本次剪辑覆盖。
 
 ## 选片与输出
@@ -28,7 +30,7 @@
 
 ## 任务与接口
 
-账号路由下的 `editing/batches` 支持 GET 列表、POST 创建；`editing/batches/<id>` 支持 GET；后缀 `plan`、`preview`、`output`、`pause`、`resume`、`cancel`、`save-plan` 使用 POST。可通过 `task_ids` 操作指定任务，否则作用于本批适用任务。预览模式输出要求单个任务、`content_confirmed` 和当前 `preview_sha256`。
+账号路由下的 `editing/batches` 支持 GET 列表、POST 创建；`editing/batches/<id>` 支持 GET；后缀 `timing`、`plan`、`preview`、`output`、`pause`、`resume`、`cancel`、`save-plan` 使用 POST。`timing` 仅执行本地语音识别。可通过 `task_ids` 操作指定任务，否则作用于本批适用任务。预览模式输出要求单个任务、`content_confirmed` 和当前 `preview_sha256`。
 
 `editing/uploads` 使用 POST 二进制媒体，携带工作台令牌、URL编码的 `X-File-Name`、`X-Upload-Kind`（narration/music/clip），返回当前账号的上传ID；新建批次通过 `narrations`（id、script）、可选 `music_id` 和 `clips`（id、position）引用。不能引用其他账号的上传ID。
 

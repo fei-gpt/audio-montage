@@ -49,4 +49,5 @@ qa/
 .hypit-runtime/
 .media-runtime/
 .dreamina-runtime/
+.asr-runtime/
 .env.workbench

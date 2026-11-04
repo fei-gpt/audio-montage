@@ -54,6 +54,18 @@ class EditingTest(unittest.TestCase):
         with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')
         self.op(b,'preview');t=self.task(b);self.assertEqual(t['status'],'awaiting_review',t.get('error'))
         self.assertEqual(t['preview']['report']['intro_seconds'],0);self.assertEqual(t['preview']['report']['duration'],2)
+    def test_upload_timing_uses_default_local_runtime_without_paid_api(self):
+        n=self.upload(self.audio,'narration');b=self.app.editing.create(self.p['id'],self.w['id'],{
+            'narrations':[{'id':n['id'],'script':'Show the red toy.'}],'rights_allowed':True})
+        model=self.root/'bundled-model';model.mkdir()
+        def transcribe(folder,selected,language,prompt):
+            self.assertEqual(selected,model);self.assertEqual(prompt,'Show the red toy.')
+            save(Path(folder)/'audio/timing.json',{'segments':[{'start':0,'end':2,'text':'Show the blue toy.'}]})
+        with patch('workbench.local_asr.runtime',return_value=(self.audio,model)),patch('workbench.local_asr.transcribe',side_effect=transcribe) as asr,patch('vision_api.call',side_effect=AssertionError('no paid call')):
+            self.op(b,'timing');self.assertEqual(asr.call_count,1)
+        t=self.task(b);self.assertEqual(t['status'],'timing_ready',t.get('error'));self.assertFalse(t['script_check']['matched'])
+        with patch('workbench.local_asr.transcribe',side_effect=AssertionError('reuse timing')):self.op(b,'timing')
+        self.assertEqual(self.task(b)['status'],'timing_ready')
     def test_uploaded_bookends_music_and_account_scope(self):
         n=self.upload(self.audio,'narration');music=self.upload(self.audio,'music');clip=self.upload(self.intro,'clip')
         with self.assertRaises(Problem):self.app.editing.create(self.p['id'],self.w2['id'],{'narrations':[{'id':n['id']}]})

@@ -7,7 +7,7 @@ function renderModuleNavigation(){
   }
 }
 let editingBatchId=null,editingPage=1;
-const editLabels={ready:'待规划',invalid:'输入无效',queued:'等待执行',running:'处理中',planned:'已规划',awaiting_review:'待审预览',completed:'已输出',needs_attention:'需要处理',paused:'已暂停',cancelled:'已取消',interrupted:'已中断'};
+const editLabels={ready:'待规划',timing_ready:'配音时间轴已识别',invalid:'输入无效',queued:'等待执行',running:'处理中',planned:'已规划',awaiting_review:'待审预览',completed:'已输出',needs_attention:'需要处理',paused:'已暂停',cancelled:'已取消',interrupted:'已中断'};
 function editingRows(tasks,page){const pages=Math.max(1,Math.ceil(tasks.length/20));page=Math.max(1,Math.min(page,pages));return {page,pages,rows:tasks.slice((page-1)*20,page*20)}}
 function editingHome(){
   const p=P();if(p)wid=defaultWorkspace(p,wid,accountPreferences);const w=W(),batches=w?.editing_batches||[];
@@ -46,18 +46,18 @@ function editBatchDialog(){
   <label class="field"><span>配音语言</span><select name="language"><option value="auto">自动检测</option><option value="en">英语</option><option value="es">西班牙语</option><option value="zh">中文</option></select></label>
   <label class="check-label"><input type="checkbox" name="keep_original_audio">保留素材库画面的原声（开头／结尾片段始终保留原声）</label>
   <label class="check-label"><input type="checkbox" name="rights_allowed" required>已确认本次上传文件和账号素材的使用范围</label>
-  <details><summary>输出位置与本地语音识别设置</summary><label class="field"><span>输出父目录（留空则保存到本机账号工作区）</span><div class="inline"><input id="editOutput" name="output_path" style="flex:1"><button type="button" data-edit-folder="editOutput">选择文件夹</button></div></label><label class="field"><span>已有 Whisper 模型目录</span><input name="model_path" id="editModel"><button type="button" data-edit-folder="editModel">选择模型文件夹</button></label><p class="small muted">时间来自实际音频识别，文案用于提示和核对，不按文字长度猜时间。缺少本地转写环境会明确提示。</p></details>
-  <p id="editUploadProgress" class="small muted" role="status">创建任务只上传并检查媒体，不调用付费 API。</p><button class="primary">上传并创建剪辑任务</button></form>`);
+  <details><summary>输出位置与本地语音识别设置</summary><label class="field"><span>输出父目录（留空则保存到本机账号工作区）</span><div class="inline"><input id="editOutput" name="output_path" style="flex:1"><button type="button" data-edit-folder="editOutput">选择文件夹</button></div></label><label class="field"><span>自定义模型目录（可留空，默认使用内置模型）</span><input name="model_path" id="editModel"><button type="button" data-edit-folder="editModel">选择模型文件夹</button></label><p class="small muted">时间来自实际音频识别，整段文案用于核对和选片，不按文字长度猜时间。${state.editing_capabilities?.local_asr?.ready?'本地识别已就绪，自动获取时间轴。':'本地识别环境准备中；不要求上传字幕文件。'}</p></details>
+  <p id="editUploadProgress" class="small muted" role="status">上传后自动在本机识别配音时间轴，不调用付费 API。</p><button class="primary">上传并创建剪辑任务</button></form>`);
   $('#editNarration').onchange=e=>{const files=[...e.target.files];$('#editScripts').innerHTML=files.map((file,i)=>`<label class="field"><span>${files.length>1?esc(file.name)+' · ':''}整段配音文案（可选）</span><textarea name="script_${i}" placeholder="粘贴与这条配音对应的整段文案，无需字幕文件"></textarea></label>`).join('')};
   $('#editClips').onchange=e=>{$('#editClipPositions').innerHTML=[...e.target.files].map((file,i)=>`<label class="field"><span>${esc(file.name)}</span><select name="clip_position_${i}"><option value="intro">放在开头</option><option value="outro">放在结尾</option></select></label>`).join('')};
   document.querySelectorAll('[data-edit-folder]').forEach(b=>b.onclick=async()=>{try{const input=$('#'+b.dataset.editFolder);const r=await api('/api/choose-folder','POST',{initial:input.value});if(r.path)input.value=r.path}catch(e){toast(e.message)}});
   $('#editCreate').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target),files=[...$('#editNarration').files],music=$('#editMusic').files[0],clips=[...$('#editClips').files];
     const body={mode:f.get('mode'),language:f.get('language'),request:f.get('request'),output_path:f.get('output_path'),model_path:f.get('model_path'),music_volume:Number(f.get('music_volume')),rights_allowed:f.has('rights_allowed'),keep_original_audio:f.has('keep_original_audio')};
-    action(async()=>{async function upload(file,kind){const key=kind+file.name+file.size+file.lastModified;if(!uploaded.has(key)){ $('#editUploadProgress').textContent='正在上传并检查：'+file.name;uploaded.set(key,await editUploadFile(file,kind))}return uploaded.get(key)}
+    action(async()=>{async function upload(file,kind){const key=JSON.stringify([kind,file.name,file.size,file.lastModified]);if(!uploaded.has(key)){ $('#editUploadProgress').textContent='正在上传并检查：'+file.name;uploaded.set(key,await editUploadFile(file,kind))}return uploaded.get(key)}
       body.narrations=[];for(const [i,file] of files.entries()){const u=await upload(file,'narration');body.narrations.push({id:u.id,script:f.get('script_'+i)||''})}
       if(music)body.music_id=(await upload(music,'music')).id;
       body.clips=[];for(const [i,file] of clips.entries()){const u=await upload(file,'clip');body.clips.push({id:u.id,position:f.get('clip_position_'+i)})}
-      const b=await api(`${wb()}/editing/batches`,'POST',body);editingBatchId=b.id;editingPage=1;$('#dialog').close();
+      const b=await api(`${wb()}/editing/batches`,'POST',body);editingBatchId=b.id;editingPage=1;$('#dialog').close();await api(`${wb()}/editing/batches/${b.id}/timing`,'POST',{});
     });
   };
 }
@@ -76,9 +76,9 @@ function editTaskDialog(id){
   dialog(t.name,`<div style="max-height:72vh;overflow:auto"><p>${badge(editLabels[t.status])} ${esc(t.stage)}</p>${t.error?`<p class="error">${esc(t.error)}</p>`:''}
   <p class="small file-path">配音：${esc(t.name)}${t.intro?`<br>原批次前段：${esc(t.intro)}`:''}</p>${t.script?`<details><summary>用户提供的整段文案</summary><p class="result-note">${esc(t.script)}</p></details>`:''}
   ${t.output||t.preview?`<video class="preview-video" controls playsinline preload="metadata" src="${esc((t.output||t.preview).media_url)}"></video>${t.output?`<p><a href="${esc(t.output.media_url)}" download>下载成片</a> · ${t.human_reviewed?'已确认预览':'未人工审片'}</p>`:''}`:''}
-  ${t.timeline?`<details><summary>配音时间轴（${t.timeline.segments.length}段，来源 ${esc(t.timeline.source)}）</summary>${t.timeline.segments.map(s=>`<p class="small">${s.start.toFixed(2)}–${s.end.toFixed(2)} · ${esc(s.text)}</p>`).join('')}</details>`:''}
+  ${t.script_check&&!t.script_check.matched?'<p class="warning">整段文案与音频识别文字存在差异，请核对下方时间轴。</p>':''}${t.timeline?`<details><summary>配音时间轴（${t.timeline.segments.length}段，来源 ${esc(t.timeline.source)}）</summary>${t.timeline.segments.map(s=>`<p class="small">${s.start.toFixed(2)}–${s.end.toFixed(2)} · ${esc(s.text)}</p>`).join('')}</details>`:''}
   ${t.plan?`<details><summary>剪辑清单（${t.plan.parts.length}段）</summary>${t.plan.parts.map(p=>`<p class="small">${p.timeline_start.toFixed(2)}–${p.timeline_end.toFixed(2)} · ${esc(p.reason)}</p>`).join('')}<label class="field"><span>修正清单 JSON（只能使用已确认镜头与安全区间）</span><textarea id="editPlanJson" style="min-height:180px">${esc(JSON.stringify(t.plan,null,2))}</textarea></label><button id="editSavePlan" ${busy||off?'disabled':''}>保存修改并重新预览</button></details>`:''}
-  <div class="inline" style="margin-top:16px"><button data-edit-op="resume" ${busy||off?'disabled':''}>${t.plan?'继续任务':'规划选片'}</button><button data-edit-op="preview" ${!t.plan||busy||off?'disabled':''}>生成预览</button><button data-edit-op="pause" ${off?'disabled':''}>暂停</button><button data-edit-op="cancel" ${off?'disabled':''}>取消</button></div>
+  <div class="inline" style="margin-top:16px"><button data-edit-op="${['ready','timing_ready'].includes(t.status)?'plan':'resume'}" ${busy||off?'disabled':''}>${t.plan?'继续任务':'规划选片'}</button><button data-edit-op="preview" ${!t.plan||busy||off?'disabled':''}>生成预览</button><button data-edit-op="pause" ${off?'disabled':''}>暂停</button><button data-edit-op="cancel" ${off?'disabled':''}>取消</button></div>
   ${t.plan&&!off?`<div style="margin-top:16px">${b.rules.mode==='preview'?'<label class="check-label"><input id="editReviewed" type="checkbox">已实际核对当前预览的内容、完整动作、配音时间轴和音画衔接</label>':''}<button class="primary" id="editFinal" ${busy||b.rules.mode==='preview'&&!t.preview?'disabled':''}>${b.rules.mode==='direct'?'直接输出（未人工审片）':'确认并输出'}</button></div>`:''}</div>`);
   document.querySelectorAll('[data-edit-op]').forEach(button=>button.onclick=()=>editOperation(button.dataset.editOp,id));
   $('#editSavePlan')?.addEventListener('click',()=>{try{editOperation('save-plan',id,{plan:JSON.parse($('#editPlanJson').value)})}catch(e){toast('JSON 格式错误：'+e.message)}});
