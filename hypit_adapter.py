@@ -8,6 +8,7 @@ the user has it installed.
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -60,6 +61,22 @@ def _json_output(text):
         raise ValueError('Hypit 未返回可解析的 JSON 结果')
 
 
+def _analysis_range(duration,start=None,end=None):
+    """Match the CLI's millisecond probe domain without expanding user ranges."""
+    lo=0.0 if start is None else start
+    hi=duration if end is None else end
+    if any(type(x) not in (int,float) or not math.isfinite(x) for x in (duration,lo,hi)) or duration<=0:
+        raise ValueError('分析时长与区间必须为有限数值，且视频时长大于零')
+    if lo<0 or hi<=lo:raise ValueError('分析区间必须满足 0 <= 开始时间 < 结束时间')
+    if hi>duration+.001:raise ValueError('分析区间超过参考视频时长')
+    # Hypit 0.3.1 rounds duration to 3 decimals, then enforces end <= duration.
+    # The <=1ms allowance is only for FFprobe precision differences, never for
+    # requesting frames beyond the CLI's own end time.
+    hi=min(hi,duration)
+    if hi<=lo:raise ValueError('分析区间在Hypit有效时长内没有可用范围')
+    return lo,hi
+
+
 def analyze(args):
     output = Path(args.output).resolve()
     if output.exists():
@@ -100,12 +117,7 @@ def _analyze(args):
     )
 
     duration = float((probe.get('data') or probe).get('duration', 0))
-    start = args.start if args.start is not None else 0.0
-    end = args.end if args.end is not None else duration
-    if end <= start:
-        raise ValueError('分析结束时间必须大于开始时间')
-    if duration and end > duration + 0.001:
-        raise ValueError('分析区间超过参考视频时长')
+    start,end=_analysis_range(duration,args.start,args.end)
 
     boundaries = _run([hypit, 'media', 'boundaries', str(source), '--json'])
     (output / 'boundaries.json').write_text(boundaries, encoding='utf-8')
@@ -135,6 +147,8 @@ def _analyze(args):
         'overview': 'overview.jpg',
         'tiles': 'tiles',
         'range': {'start': start, 'end': end},
+        'requested_range': {'start': args.start, 'end': args.end},
+        'range_adjustment': 'clamped_to_hypit_probe_precision' if args.end is not None and args.end!=end else None,
         'sampling': {'every': args.every, 'overview_frames': args.overview_frames},
         'interpretation_status': 'evidence_prepared_not_semantically_judged',
         'note': 'Hypit boundaries are mechanical change candidates; editorial shot labels require human or vision review.'
