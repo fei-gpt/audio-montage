@@ -23,7 +23,8 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
 
 $nodeVersion = (& node --version).Trim().TrimStart('v')
 try { $node = [version]$nodeVersion } catch { Fail "无法解析 Node.js 版本：$nodeVersion" }
-if (($node.Major -lt 22) -or ($node.Major -eq 22 -and $node.Minor -lt 15)) {
+$tooOld = ($node.Major -lt 22) -or (($node.Major -eq 22) -and ($node.Minor -lt 15))
+if ($tooOld) {
     Fail "Hypit 0.3.1 需要 Node.js 22.15+，当前为 $nodeVersion。"
 }
 
