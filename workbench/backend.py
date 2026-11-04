@@ -154,12 +154,15 @@ class Workbench:
         if not cfg.get('base_url') or not cfg.get('model') or cfg.get('model','').startswith('YOUR'): missing.append('视觉API地址与模型')
         from vision_api import api_key
         if not api_key(cfg): missing.append('API 密钥（请在识别服务设置中填写）')
+        if cfg.get('provider')=='codex':missing=[] if shutil.which(cfg.get('codex_bin','codex')) else ['Codex CLI 未安装']
         import importlib.util
         from hypit_adapter import _hypit_command
         try: hypit_path=_hypit_command(None)
         except ValueError: hypit_path=None
         return {'hypit':bool(hypit_path), 'hypit_path':hypit_path, 'ffmpeg':bool(shutil.which('ffmpeg')),'pdf_text':bool(importlib.util.find_spec('pypdf')),'vision_ready':not missing,'missing':missing,'config':cfg}
     def config(self):
+        from vision_api import execution_config
+        if execution_config.get():return dict(execution_config.get())
         path=self.root/'vision-config.json'
         return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key_env':'DEEPSEEK_API_KEY'}
     def set_config(self,cfg):
@@ -366,7 +369,7 @@ class Workbench:
                 c.execute('CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY, sha256 TEXT, path TEXT, kind TEXT, available INTEGER)')
                 for a in self.store.all('asset',w):c.execute('INSERT OR REPLACE INTO media VALUES(?,?,?,?,?)',(a['id'],a['sha256'],a['path'],a['kind'],int(a['available'])))
         return {'assets':found,'errors':errors,'count':len(found)}
-    def create_job(self,p,w,kind,allow_paid=False,extra='',rights=False,asset_ids=None):
+    def create_job(self,p,w,kind,allow_paid=False,extra='',rights=False,asset_ids=None,provider=None,model=None):
         self.product(p)
         if kind=='organize':
             ws=self.workspace(p,w)
@@ -380,7 +383,12 @@ class Workbench:
         scope=w if kind=='organize' else p
         j={'id':uid(),'scope':scope,'product_id':p,'workspace_id':w,'kind':kind,'status':'queued','stage':'等待执行','done':[],'progress':0,'allow_paid':allow_paid is True,'rights_allowed':rights is True,'extra_request':str(extra)[:10000],'created_at':now()}
         if asset_ids is not None:j['asset_ids']=asset_ids
-        if not self.status()['vision_ready']:j.update(status='requires_configuration',stage='缺少识别配置：'+ '；'.join(self.status()['missing']))
+        if provider not in {None,'vision','codex'}:raise Problem('不支持的识别服务')
+        if provider=='codex':
+            if not isinstance(model,str) or not model.strip():raise Problem('Codex任务必须明确指定模型，不自动换模型')
+            j['analysis_config']={'provider':'codex','model':model.strip(),'base_url':'codex://local','codex_bin':shutil.which('codex') or 'codex'}
+        ready=bool(shutil.which('codex')) if provider=='codex' else self.status()['vision_ready']
+        if not ready:j.update(status='requires_configuration',stage='缺少Codex CLI配置' if provider=='codex' else '缺少识别配置：'+ '；'.join(self.status()['missing']))
         elif not j['allow_paid']:j.update(status='requires_consent',stage='需要明确允许本次向已配置模型发送资料并可能计费')
         self.store.put('job',scope,j)
         if j['status']=='queued' and self.pool:self.pool.submit(self.run_job,j['id'],scope)
@@ -390,7 +398,9 @@ class Workbench:
         if j['product_id']!=p:raise Problem('任务不属于当前产品',404)
         if j['status'] in {'running','queued'}:return j
         if w and not self.workspace(p,w)['assigned']:raise Problem('请先分配账号',409)
-        if not self.status()['vision_ready']:raise Problem('请先完成视觉API配置',409)
+        if j.get('analysis_config',{}).get('provider')=='codex':
+            if not shutil.which(j['analysis_config'].get('codex_bin','codex')):raise Problem('请先安装Codex CLI',409)
+        elif not self.status()['vision_ready']:raise Problem('请先完成视觉API配置',409)
         if allow_paid is not True:raise Problem('需要明确允许本次模型调用',409)
         if asset_ids is not None:
             if not w or not isinstance(asset_ids,list) or not asset_ids or any(not isinstance(x,str) for x in asset_ids):raise Problem('素材范围无效')
@@ -444,8 +454,9 @@ class Workbench:
     def run_job(self,jid,scope):
         j=self.store.get('job',jid,scope)
         if j['status']!='queued':return
-        from vision_api import retry_incomplete
+        from vision_api import retry_incomplete,execution_config
         retry_token=retry_incomplete.set(j.get('retry_failed') is True)
+        config_token=execution_config.set(j.get('analysis_config'))
         try:
             self.job_update(j,status='running',stage='准备资料',error='')
             p=j['product_id']
@@ -496,7 +507,9 @@ class Workbench:
             from montage import save
             save(self.root/'job-errors'/(jid+'.json'),{'error_type':type(exc).__name__,'traceback':traceback.format_exc()})
             self.job_update(j,status='failed',stage='任务停止，保留已处理记录',error=str(exc)[:1800])
-        finally:retry_incomplete.reset(retry_token)
+        finally:
+            retry_incomplete.reset(retry_token)
+            execution_config.reset(config_token)
     def process_asset(self,j,a,product):
         from montage import read,save
         from content_recognition import prepare

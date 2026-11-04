@@ -16,6 +16,7 @@ from content_recognition import content_problem, requirement_match
 from vision_json import decode_response
 
 retry_incomplete = ContextVar('retry_incomplete', default=False)
+execution_config = ContextVar('execution_config', default=None)
 
 
 def validate_model(base_url, model):
@@ -35,6 +36,10 @@ def api_key(config):
 
 
 def call(config, prompt, evidence, cache, allow_paid):
+    config=execution_config.get() or config
+    if config.get('provider')=='codex':
+        from codex_vision import call as codex_call
+        return codex_call(config,prompt,evidence,cache,allow_paid)
     validate_model(config['base_url'], config['model'])
     endpoint = config['base_url'].rstrip('/') + '/chat/completions'
     parsed = urlparse(endpoint)

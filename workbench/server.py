@@ -134,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
             return s.put('workspace',p,ws)
         if rest=='libraries' and method=='POST':return app.attach_library(p,w,b.get('path',''),b.get('kind'))
         if rest=='scan' and method=='POST':return app.scan(p,w)
-        if rest=='start' and method=='POST':return app.create_job(p,w,'organize',b.get('allow_paid'),b.get('request',''),b.get('rights_allowed'),b.get('asset_ids'))
+        if rest=='start' and method=='POST':return app.create_job(p,w,'organize',b.get('allow_paid'),b.get('request',''),b.get('rights_allowed'),b.get('asset_ids'),b.get('provider'),b.get('model'))
         if rest and rest.startswith('jobs/') and rest.endswith('/resume') and method=='POST':return app.resume(p,w,rest.split('/')[1],b.get('allow_paid'),b.get('retry_failed',False),b.get('continue_on_error'),b.get('asset_ids'))
         if rest=='search' and method=='GET':
             query=q.get('q',[''])[0].lower();return {'shots':[x for x in s.all('shot',w) if query in (x.get('facts','')+' '+x.get('reason','')).lower() and not x.get('stale')]}
