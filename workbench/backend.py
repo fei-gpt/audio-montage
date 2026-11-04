@@ -159,7 +159,7 @@ class Workbench:
         from hypit_adapter import _hypit_command
         try: hypit_path=_hypit_command(None)
         except ValueError: hypit_path=None
-        return {'hypit':bool(hypit_path), 'hypit_path':hypit_path, 'ffmpeg':bool(shutil.which('ffmpeg')),'pdf_text':bool(importlib.util.find_spec('pypdf')),'vision_ready':not missing,'missing':missing,'config':cfg}
+        return {'processing_default':'codex-luna-v1','hypit':bool(hypit_path), 'hypit_path':hypit_path, 'ffmpeg':bool(shutil.which('ffmpeg')),'pdf_text':bool(importlib.util.find_spec('pypdf')),'vision_ready':not missing,'missing':missing,'config':cfg}
     def config(self):
         from vision_api import execution_config
         if execution_config.get():return dict(execution_config.get())
