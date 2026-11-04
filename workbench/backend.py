@@ -189,11 +189,16 @@ class Workbench:
             else:
                 raw=base64.b64decode(body.get('data',''),validate=True)
                 if not raw or len(raw)>30_000_000:raise Problem('参考文件为空或超过30MB')
+                content_hash=hashlib.sha256(raw).hexdigest()
+                existing=next((x for x in self.store.all('source',p) if x.get('sha256')==content_hash),None)
+                if existing and existing.get('status')!='failed':return existing
+                if existing:s['id']=existing['id']
                 ext=Path(s['name']).suffix.lower()
                 if ext not in {'.pdf','.png','.jpg','.jpeg','.webp'}:raise Problem('支持PDF、PNG、JPG、WebP')
                 file=directory/(s['id']+ext);file.write_bytes(raw);s.update(path=str(file),sha256=digest(file))
                 if ext=='.pdf':
-                    from pypdf import PdfReader
+                    try:from pypdf import PdfReader
+                    except ImportError as exc:raise Problem('PDF解析组件无法加载，请修复工作台依赖及当前Windows用户的读取权限；文件已保留，未调用理解API。') from exc
                     reader=PdfReader(file)
                     if len(reader.pages)>300:raise Problem('PDF超过300页，请提供重点产品页')
                     s.update(kind='pdf',pages=[{'page':i+1,'text':page.extract_text() or ''} for i,page in enumerate(reader.pages)])
