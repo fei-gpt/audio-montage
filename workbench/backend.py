@@ -197,33 +197,50 @@ class Workbench:
         import copy
         with self.lock:
             prepared=[]
+            bundles={}
             for selection in selections:
                 if not isinstance(selection,dict):raise Problem('资料引用格式无效')
                 origin=self.product(selection.get('product_id'))
                 source=self.store.get('source',selection.get('source_id'),origin['id'])
+                if not origin.get('profile',{}).get('understood_at') or source.get('status')!='understood':
+                    raise Problem('已有资料入口仅复用已理解的资料包；请先在原产品完成理解')
+                bundles[origin['id']]=origin
                 if source.get('status')=='failed' or source.get('kind') not in {'pdf','image','link'}:
                     raise Problem('所选资料尚不可用')
-                for field in ('path','image'):
-                    if source.get(field):
-                        file=Path(source[field]).resolve()
-                        if not file.is_file() or self.root not in file.parents:
-                            raise Problem('引用文件已失效，请重新上传该资料')
                 origin_id=source.get('reference',{}).get('source_id',source['id'])
                 existing=next((s for s in self.store.all('source',p) if s['id']==origin_id or s.get('reference',{}).get('source_id')==origin_id),None)
                 if origin['id']==p:existing=source
                 if existing:prepared.append((existing,False));continue
                 item=copy.deepcopy(source)
                 for key in ('id','updated_at','error'):item.pop(key,None)
-                item.update(id=uid(),status='awaiting_understanding',reference={
+                item.update(id=uid(),status='understood',reference={
                     'product_id':source.get('reference',{}).get('product_id',origin['id']),
                     'product_name':source.get('reference',{}).get('product_name',origin['name']),
                     'source_id':origin_id})
                 prepared.append((item,True))
+            for origin in bundles.values():
+                expected={s['id'] for s in self.store.all('source',origin['id']) if s.get('status')=='understood'}
+                selected={s.get('source_id') for s in selections if s.get('product_id')==origin['id']}
+                if not expected.issubset(selected):raise Problem('请引用完整的已理解资料包，避免把整体理解错误归到单份文件')
             added=[]
             for item,create in prepared:
                 duplicate=next((s for s in added if s.get('reference')==item.get('reference') and item.get('reference')),None)
                 if duplicate:continue
                 added.append(self.store.put('source',p,item) if create else item)
+            from workbench.knowledge import merge_profiles,remap_profile
+            profiles=[]
+            for origin in bundles.values():
+                mapping={}
+                for source in self.store.all('source',origin['id']):
+                    original=source.get('reference',{}).get('source_id',source['id'])
+                    local=next((s for s in added if s['id']==source['id'] or s.get('reference',{}).get('source_id')==original),None)
+                    if local:mapping[source['id']]=local['id']
+                profiles.append(remap_profile(origin['profile'],mapping))
+            target=self.product(p)
+            target['profile']=merge_profiles([target.get('profile',{})]+profiles)
+            target['profile']['understood_at']=now()
+            target['profile']['reuse_note']='直接复用已保存语料，未重新读取原文件或调用API'
+            self.store.put('product','root',target)
             return {'sources':added,'count':len(added)}
 
     def attach_library(self,p,w,path,kind):
@@ -331,8 +348,12 @@ class Workbench:
     def job_update(self,j,**updates): j.update(updates);self.store.put('job',j['scope'],j)
     def understand(self,p,allow_paid):
         from vision_api import call
-        sources=self.store.all('source',p);usable=[s for s in sources if s['status']!='failed']
-        if not usable:raise Problem('没有可理解的资料，请先添加PDF、图片或可读取链接')
+        from workbench.knowledge import merge_profiles
+        sources=self.store.all('source',p);usable=[s for s in sources if s['status'] not in {'failed','understood'}]
+        if not usable:
+            existing=self.product(p).get('profile',{})
+            if existing:return existing
+            raise Problem('没有可理解的资料，请先添加PDF、图片或可读取链接')
         evidence=[]
         for s in usable:
             if s.get('image'):evidence.append({'time':len(evidence),'path':s['image']})
@@ -361,7 +382,7 @@ class Workbench:
             source=next(s for s in usable if s['id']==c['source_id'])
             if source['kind']=='pdf' and (not isinstance(c.get('page'),int) or not 1<=c['page']<=len(source['pages'])):raise Problem('PDF主张缺少有效页码，未采用')
         profile['sources']=[{'id':s['id'],'name':s['name'],'url':s.get('url'),'sha256':s.get('sha256')} for s in usable]
-        profile['understood_at']=now();product=self.product(p);product['profile']=profile;self.store.put('product','root',product)
+        profile['understood_at']=now();product=self.product(p);product['profile']=merge_profiles([product.get('profile',{}),profile]);product['profile']['understood_at']=now();self.store.put('product','root',product)
         for s in usable:s['status']='understood';self.store.put('source',p,s)
         return profile
     def run_job(self,jid,scope):
