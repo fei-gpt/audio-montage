@@ -115,7 +115,24 @@ class Workbench:
         for j in self.store.all('job'):
             if j['status'] in {'running','queued'}:
                 j.update(status='interrupted',stage='服务重启，已保留进度；可继续任务'); self.store.put('job',j['scope'],j)
-    def product(self,p): return self.store.get('product',p,'root')
+    def product(self,p):
+        product=self.store.get('product',p,'root')
+        owner=product;seen={p}
+        while owner.get('knowledge_product_id'):
+            ident=owner['knowledge_product_id']
+            if ident in seen:raise Problem('产品知识关联存在循环')
+            seen.add(ident);owner=self.store.get('product',ident,'root')
+        if owner['id']!=p:
+            product['profile']=owner.get('profile',{})
+            product['knowledge_product_id']=owner['id']
+            product['knowledge_product_name']=owner['name']
+        return product
+
+    def save_product_profile(self,p,profile):
+        product=self.product(p)
+        owner=self.store.get('product',product.get('knowledge_product_id',p),'root')
+        owner['profile']=profile
+        self.store.put('product','root',owner)
     def workspace(self,p,w): self.product(p); return self.store.get('workspace',w,p)
     def wroot(self,w):
         if not re.fullmatch(r'[a-f0-9]{32}',w): raise Problem('无效账号工作区',404)
@@ -244,7 +261,7 @@ class Workbench:
             return {'sources':added,'count':len(added)}
 
     def reference_knowledge(self,p,product_ids):
-        if not isinstance(product_ids,list) or not product_ids or len(product_ids)>50:raise Problem('请选择文字语料包')
+        if not isinstance(product_ids,list) or len(set(product_ids))!=1:raise Problem('请选择同一产品的一份共用语料')
         origins=[self.product(ident) for ident in dict.fromkeys(product_ids) if ident!=p]
         if any(not origin.get('profile',{}).get('understood_at') for origin in origins):raise Problem('所选产品没有已理解语料')
         results=[]
@@ -252,26 +269,20 @@ class Workbench:
         return {'count':len(results)}
 
     def store_knowledge(self,p,name,profile,origin_id):
-        from workbench.knowledge import merge_profiles,remap_profile
-        import copy
-        target=self.product(p)
+        origin=self.product(origin_id)
+        owner_id=origin.get('knowledge_product_id',origin_id)
+        target=self.store.get('product',p,'root')
+        if owner_id==p:return {'id':p,'kind':'knowledge','status':'understood'}
+        if not profile.get('understood_at'):raise Problem('没有可复用的产品知识')
+        if target.get('profile') and not target.get('knowledge_product_id') and not any(s.get('kind')=='knowledge' for s in self.store.all('source',p)):
+            raise Problem('当前产品已有独立语料，不能直接覆盖；同一产品的账号可直接共用当前资料')
         with self.lock:
-            existing=next((s for s in self.store.all('source',p) if s.get('kind')=='knowledge' and s.get('knowledge_origin')==origin_id),None)
-            if existing:return existing
-            if not isinstance(profile,dict) or not profile.get('understood_at'):raise Problem('没有可复用的文字理解结果')
-            bundle_id=uid()
-            mapping={ident:bundle_id for ident in profile.get('references',[]) if isinstance(ident,str)}
-            for s in profile.get('sources',[]):
-                if isinstance(s,dict) and isinstance(s.get('id'),str):mapping[s['id']]=bundle_id
-            # A text-only snapshot carries no source file or normalized image paths.
-            text_profile={k:copy.deepcopy(v) for k,v in profile.items() if k in {'appearance','claims','demonstrations','unknowns','conflicts','references','suggested_name','understood_at'}}
-            text_profile=remap_profile(text_profile,mapping)
-            source=self.store.put('source',p,{'id':bundle_id,'name':str(name)+' · 文字语料包','kind':'knowledge','status':'understood','pages':[],
-                'knowledge_origin':origin_id,'knowledge':text_profile,'reference':{'product_id':origin_id,'product_name':str(name)},'note':'纯文字语料快照，未重新读取图片或调用API'})
-            target['profile']=merge_profiles([target.get('profile',{}),text_profile])
-            target['profile']['understood_at']=now()
+            target.update(knowledge_product_id=owner_id,profile={})
             self.store.put('product','root',target)
-            return source
+            existing=next((s for s in self.store.all('source',p) if s.get('kind')=='knowledge' and s.get('knowledge_origin')==owner_id),None)
+            return existing or self.store.put('source',p,{'name':name+' · 共用产品知识','kind':'knowledge','status':'understood',
+                'pages':[],'knowledge_origin':owner_id,'reference':{'product_id':owner_id,'product_name':name},'note':'关联同一份产品知识，无副本、无API调用'})
+
 
     def attach_library(self,p,w,path,kind):
         self.workspace(p,w)
@@ -412,7 +423,7 @@ class Workbench:
             source=next(s for s in usable if s['id']==c['source_id'])
             if source['kind']=='pdf' and (not isinstance(c.get('page'),int) or not 1<=c['page']<=len(source['pages'])):raise Problem('PDF主张缺少有效页码，未采用')
         profile['sources']=[{'id':s['id'],'name':s['name'],'url':s.get('url'),'sha256':s.get('sha256')} for s in usable]
-        profile['understood_at']=now();product=self.product(p);product['profile']=merge_profiles([product.get('profile',{}),profile]);product['profile']['understood_at']=now();self.store.put('product','root',product)
+        profile['understood_at']=now();product=self.product(p);merged=merge_profiles([product.get('profile',{}),profile]);merged['understood_at']=now();self.save_product_profile(p,merged)
         for s in usable:s['status']='understood';self.store.put('source',p,s)
         return profile
     def run_job(self,jid,scope):

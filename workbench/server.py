@@ -62,6 +62,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/state' and method=='GET':
             products=s.all('product','root')
             for p in products:
+                p.update(app.product(p['id']))
                 p['sources']=s.all('source',p['id']);p['jobs']=s.all('job',p['id']);p['workspaces']=s.all('workspace',p['id'])
                 for w in p['workspaces']:
                     w.update(libraries=s.all('library',w['id']),assets=s.all('asset',w['id']),shots=s.all('shot',w['id']),jobs=s.all('job',w['id']),exports=s.all('export',w['id']))
