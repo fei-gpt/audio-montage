@@ -39,9 +39,9 @@ function editBatchDialog(){
   dialog('新建剪辑任务',`<form id="editCreate"><div class="meta-box">使用 ${esc(P().name)} / ${esc(w.name)} 已确认素材库 · ${count} 个已确认镜头。无需重新上传素材。</div>
   <div class="refbox" style="margin-top:16px"><label class="field"><span>1 · 上传配音（必选）</span><input id="editNarration" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac" multiple required></label><p class="small muted">每条配音生成一条视频，画面直接使用当前账号素材库。</p></div>
   <div class="refbox" style="margin-top:12px"><label class="field"><span>2 · 上传背景音乐（可选）</span><input id="editMusic" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac"></label><label class="field"><span>音乐音量（%）</span><input type="number" name="music_volume" min="0" max="100" value="15"></label><p class="small muted">仅混入配音对应的主体部分。音乐不足时不自动循环，剩余部分继续保留配音。</p></div>
-  <div class="refbox" style="margin-top:12px"><label class="field"><span>3 · 上传开头／结尾片段（可选）</span><input id="editClips" type="file" accept="video/*,.mp4,.mov,.mkv,.webm" multiple></label><div id="editClipPositions"></div><p class="small muted">整段保留画面、速度和原声，按选择顺序接入。不传也可以制作视频。</p></div>
+  <div class="refbox" style="margin-top:12px"><label class="field"><span>3 · 上传插入片段（可选，逐个选择开头或结尾）</span><input id="editClips" type="file" accept="video/*,.mp4,.mov,.mkv,.webm" multiple></label><div id="editClipPositions"><p class="small muted">上传后，为每个片段选择：放在开头 或 放在结尾。</p></div><p class="small muted">片头 → 素材库剪辑主体 → 片尾。同一位置的多个片段按上传顺序排列，整段保留画面、速度和原声。</p></div>
   <div id="editScripts"><label class="field"><span>整段配音文案（可选）</span><textarea name="script_0" placeholder="粘贴与配音对应的整段文案，无需提供字幕文件"></textarea></label></div>
-  <label class="field"><span>剪辑要求</span><textarea name="request" placeholder="例如：先展示握持动作，再展示灯效；不使用包装画面"></textarea></label>
+  <label class="field"><span>剪辑匹配方式</span><select name="matching_mode"><option value="duration">时长匹配 · 按断句长度选素材（不调用模型）</option><option value="semantic">语义匹配 · 按文案意思选画面（调用模型）</option></select></label><label class="field"><span>剪辑要求（语义模式使用）</span><textarea name="request" placeholder="例如：先展示握持动作，再展示灯效；不使用包装画面"></textarea></label>
   <label class="field"><span>输出方式</span><select name="mode"><option value="preview">先预览再确认成片</option><option value="direct">直接批量输出（未人工审片）</option></select></label>
   <label class="field"><span>配音语言</span><select name="language"><option value="auto">自动检测</option><option value="en">英语</option><option value="es">西班牙语</option><option value="zh">中文</option></select></label>
   <label class="check-label"><input type="checkbox" name="keep_original_audio">保留素材库画面的原声（开头／结尾片段始终保留原声）</label>
@@ -49,14 +49,14 @@ function editBatchDialog(){
   <details><summary>输出位置与本地语音识别设置</summary><label class="field"><span>输出父目录（留空则保存到本机账号工作区）</span><div class="inline"><input id="editOutput" name="output_path" style="flex:1"><button type="button" data-edit-folder="editOutput">选择文件夹</button></div></label><label class="field"><span>自定义模型目录（可留空，默认使用内置模型）</span><input name="model_path" id="editModel"><button type="button" data-edit-folder="editModel">选择模型文件夹</button></label><p class="small muted">时间来自实际音频识别，整段文案用于核对和选片，不按文字长度猜时间。${state.editing_capabilities?.local_asr?.ready?'本地识别已就绪，自动获取时间轴。':'本地识别环境准备中；不要求上传字幕文件。'}</p></details>
   <p id="editUploadProgress" class="small muted" role="status">上传后自动在本机识别配音时间轴，不调用付费 API。</p><button class="primary">上传并创建剪辑任务</button></form>`);
   $('#editNarration').onchange=e=>{const files=[...e.target.files];$('#editScripts').innerHTML=files.map((file,i)=>`<label class="field"><span>${files.length>1?esc(file.name)+' · ':''}整段配音文案（可选）</span><textarea name="script_${i}" placeholder="粘贴与这条配音对应的整段文案，无需字幕文件"></textarea></label>`).join('')};
-  $('#editClips').onchange=e=>{$('#editClipPositions').innerHTML=[...e.target.files].map((file,i)=>`<label class="field"><span>${esc(file.name)}</span><select name="clip_position_${i}"><option value="intro">放在开头</option><option value="outro">放在结尾</option></select></label>`).join('')};
+  $('#editClips').onchange=e=>{$('#editClipPositions').innerHTML=[...e.target.files].map((file,i)=>`<label class="field"><span>${esc(file.name)} · 插入位置</span><select name="clip_position_${i}" required><option value="" disabled selected>请选择放在开头还是结尾</option><option value="intro">放在开头</option><option value="outro">放在结尾</option></select></label>`).join('')};
   document.querySelectorAll('[data-edit-folder]').forEach(b=>b.onclick=async()=>{try{const input=$('#'+b.dataset.editFolder);const r=await api('/api/choose-folder','POST',{initial:input.value});if(r.path)input.value=r.path}catch(e){toast(e.message)}});
   $('#editCreate').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target),files=[...$('#editNarration').files],music=$('#editMusic').files[0],clips=[...$('#editClips').files];
     const body={mode:f.get('mode'),language:f.get('language'),request:f.get('request'),output_path:f.get('output_path'),model_path:f.get('model_path'),music_volume:Number(f.get('music_volume')),rights_allowed:f.has('rights_allowed'),keep_original_audio:f.has('keep_original_audio')};
-    action(async()=>{async function upload(file,kind){const key=JSON.stringify([kind,file.name,file.size,file.lastModified]);if(!uploaded.has(key)){ $('#editUploadProgress').textContent='正在上传并检查：'+file.name;uploaded.set(key,await editUploadFile(file,kind))}return uploaded.get(key)}
+    action(async()=>{if(f.get('matching_mode')==='duration'){try{const capabilities=await api('/api/editing-modes');if(!capabilities.modes.includes('duration'))throw new Error('unsupported')}catch(e){throw new Error('时长匹配需要加载新版服务，请待当前任务结束后重启工作台')}}async function upload(file,kind){const key=JSON.stringify([kind,file.name,file.size,file.lastModified]);if(!uploaded.has(key)){ $('#editUploadProgress').textContent='正在上传并检查：'+file.name;uploaded.set(key,await editUploadFile(file,kind))}return uploaded.get(key)}
       body.narrations=[];for(const [i,file] of files.entries()){const u=await upload(file,'narration');body.narrations.push({id:u.id,script:f.get('script_'+i)||''})}
       if(music)body.music_id=(await upload(music,'music')).id;
-      body.clips=[];for(const [i,file] of clips.entries()){const u=await upload(file,'clip');body.clips.push({id:u.id,position:f.get('clip_position_'+i)})}
+      body.matching_mode=f.get('matching_mode');body.clips=[];for(const [i,file] of clips.entries()){const u=await upload(file,'clip');body.clips.push({id:u.id,position:f.get('clip_position_'+i)})}
       const b=await api(`${wb()}/editing/batches`,'POST',body);editingBatchId=b.id;editingPage=1;$('#dialog').close();await api(`${wb()}/editing/batches/${b.id}/timing`,'POST',{});
     });
   };
@@ -65,7 +65,7 @@ function currentEditBatch(){return W()?.editing_batches?.find(b=>b.id===editingB
 function editOperation(op,taskId,extra={}){
   if(op==='preview'&&!taskId){extra.task_ids=currentEditBatch().tasks.filter(t=>t.plan&&!['running','queued','completed','cancelled','invalid'].includes(t.status)).map(t=>t.id);if(!extra.task_ids.length)return toast('没有可生成预览的已规划任务')}
   const go=allow_paid=>action(async()=>{await api(`${wb()}/editing/batches/${editingBatchId}/${op}`,'POST',{...(taskId?{task_ids:[taskId]}:{}),...extra,allow_paid});$('#dialog').close()});
-  if(['plan','resume'].includes(op)){
+  if(['plan','resume'].includes(op)&&currentEditBatch()?.rules.matching_mode!=='duration'){
     dialog('规划剪辑',`<p>将配音文本、产品知识和已保存的素材分析发送给 ${esc(state.capabilities.config.model)}，不重新发送整库视频。可能产生 API 费用。</p><label class="check-label"><input id="editPaid" type="checkbox">允许本次规划调用；未完整返回时不自动重试</label><button id="editGo" class="primary">开始规划${currentEditBatch()?.rules.mode==='direct'?'并直接输出':''}</button>`);
     $('#editGo').onclick=()=>{if(!$('#editPaid').checked)return toast('请明确允许本次模型调用');go(true)};
   }else go(false);

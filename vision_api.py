@@ -185,7 +185,11 @@ def analyze(args):
                   '先说明产品/内容展示意图，再识别真实硬切、同场景跳剪和转场，最后在单个物理镜头内选材。'
                   '同一功能展示不可掩盖切镜；工具接触产品可有演示价值，不等同于性能已被证实。'
                   '默认1–4秒；确认一镜到底且需保留完整展示效果时不受此范围限制，不机械切碎。')
-        result = call(config, prompt + VISUAL_PROMPT, frames, cache, args.allow_paid)
+        resumed=read(path.parent/'resume-coarse.json') if (path.parent/'resume-coarse.json').is_file() else {}
+        if resumed.get('source_sha256')==task['source_sha256'] and resumed.get('start')==start and resumed.get('end')==end:
+            result=resumed['result']
+        else:
+            result = call(config, prompt + VISUAL_PROMPT, frames, cache, args.allow_paid)
         if not isinstance(result, dict):
             raise ValueError('模型批次响应不是 JSON 对象')
         if batches:

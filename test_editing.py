@@ -54,6 +54,17 @@ class EditingTest(unittest.TestCase):
         with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')
         self.op(b,'preview');t=self.task(b);self.assertEqual(t['status'],'awaiting_review',t.get('error'))
         self.assertEqual(t['preview']['report']['intro_seconds'],0);self.assertEqual(t['preview']['report']['duration'],2)
+    def test_duration_mode_never_calls_model_and_renders(self):
+        n=self.upload(self.audio,'narration')
+        b=self.app.editing.create(self.p['id'],self.w['id'],{'narrations':[{'id':n['id']}],'rights_allowed':True,'matching_mode':'duration'})
+        t=self.task(b);cache=self.app.wroot(self.w['id'])/'editing-audio'
+        save(cache/(t['audio_sha256']+'-auto.json'),{'audio_sha256':t['audio_sha256'],'segments':[{'start':0,'end':1,'text':'unrelated'},{'start':1,'end':2,'text':'anything'}]})
+        with patch('vision_api.call',side_effect=AssertionError('duration mode must not call any model')):
+            self.op(b,'plan');t=self.task(b)
+            self.assertEqual(t['status'],'planned',t.get('error'))
+            self.assertEqual(t['plan']['matching_mode'],'duration')
+            self.assertEqual([x['frames'] for x in t['plan']['parts']],[30,30])
+            self.op(b,'preview');self.assertEqual(self.task(b)['status'],'awaiting_review')
     def test_upload_timing_uses_default_local_runtime_without_paid_api(self):
         n=self.upload(self.audio,'narration');b=self.app.editing.create(self.p['id'],self.w['id'],{
             'narrations':[{'id':n['id'],'script':'Show the red toy.'}],'rights_allowed':True})

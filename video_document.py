@@ -5,16 +5,14 @@ from montage import fingerprint, save
 
 SCHEMA = 2
 VISUAL_PROMPT = '''
-逐项描述实际画面区别，不能仅写“产品演示”或“旋转灯效”。返回 visual_details 对象，包含：
-shot_size（远景/全景/中景/近景/特写及主体占比）、subject（产品颜色、形态、数量、朝向）、
-people_hands（人物/手的数量、左右手、握持方式、衣袖）、actions（动作先后与变化）、
-background（墙面/桌面/地面材质、颜色、纹理、摆设、空间位置）、
-objects（其他可见元素、位置、遮挡关系）、camera（俯仰角度、正侧面、固定或运镜）、
-lighting（环境明暗、光源、反光与LED颜色轨迹）、composition（构图与主体位置）、
-distinctive_features（用于区别其他视频的具体可见特征数组）、
-temporal_events（含start/end/description的事件数组）、unknowns（看不清或采样不能证实的内容）。
-细节必须来自所给帧，不推测未见背景。相同用途不等于相同画面，不能仅凭动作或产品名合并。
+轻量差异识别：只记影响选材的可见区别，不做全景细节盘点。
+visual_details只返回actions（一句话主要展示）、distinctive_features（最多3个短语，各不超过20字）。
+差异可包括展示方式、主要效果、数量或显著场景变化；没有明显差异就写“常规展示”，不强行找不同。
+不逐项描述墙面、地板、衣袖、手势、摆设、光线、构图，不输出逐帧事件或参数推测。
+facts、reason、intent、visible_result各用一句短句，避免重复；仅真正影响产品识别或选材的未知项才记录。
+差异来自本片可见特征；没有其他视频证据时不声称已做跨视频对比。切镜和动作边界仍按证据判断。
 '''
+
 
 
 def document_path(source):

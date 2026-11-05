@@ -1,3 +1,4 @@
+import contextlib
 """Integration checks with real media; no user's files or network required."""
 import importlib.util
 import json
@@ -83,7 +84,7 @@ class PipelineTest(unittest.TestCase):
         # Simulate a pre-policy database: retrieval must recheck old entries.
         digest = m.fingerprint(landscape)
         labels = {'description': 'legacy landscape scene', 'tags': []}
-        with ix.connect(db) as conn:
+        with contextlib.closing(ix.connect(db)) as conn, conn:
             conn.execute('INSERT INTO assets(hash,paths,duration,settings) VALUES(?,?,?,?)',
                          (digest, json.dumps([str(landscape)]), 4, '{}'))
             conn.execute('INSERT INTO clips VALUES(?,?,?,?,?,?,?)',
@@ -117,7 +118,7 @@ class PipelineTest(unittest.TestCase):
         out = m.probe(self.project / 'out/final.mp4')
         self.assertLess(abs(float(out['format']['duration']) - 2.4), 0.1)
         self.assertEqual(sum(s['codec_type'] == 'audio' for s in out['streams']), 1)
-        self.assertIn('00:00:00,200 --> 00:00:01,130', (self.project / 'out/captions.srt').read_text())
+        self.assertIn('00:00:00,200 --> 00:00:01,130', (self.project / 'out/captions.srt').read_text(encoding='utf-8'))
         m.review(args)
         self.assertEqual(len(list((self.project / 'qa/frames').glob('*.jpg'))), 15)
         m.render(args)
@@ -256,7 +257,7 @@ class PipelineTest(unittest.TestCase):
         m.preflight(Namespace(project=self.project))
         self.assertTrue(m.read(self.project / 'qa/preflight.json')['audio']['sha256_matches'])
         reference = self.root / 'reference.txt'
-        reference.write_text('¡Atención! La mesa está limpia y cuesta 19.99 dólares.')
+        reference.write_text('¡Atención! La mesa está limpia y cuesta 19.99 dólares.',encoding='utf-8')
         data = m.read(self.project / 'audio/timing.json')
         data['segments'][0]['text'] = '¡Atención! La mesa esta limpia y cuesta 29.99 dólares.'
         m.save(self.project / 'audio/timing.json', data)

@@ -1,3 +1,4 @@
+import contextlib
 """Real-media tests for trimming, multi-part coverage and duplicate avoidance."""
 import copy
 import importlib.util
@@ -97,7 +98,7 @@ class PlannerTest(unittest.TestCase):
             p.apply_plan(Namespace(project=self.project, proposal=path))
         self.assertFalse((self.project / 'plans/edit.backup-1.json').exists())
         m.save(path, original)
-        with ix.connect(self.db) as db:
+        with contextlib.closing(ix.connect(self.db)) as db, db:
             db.execute('UPDATE clips SET reviewed=0')
         with self.assertRaisesRegex(ValueError, '标注已改变'):
             p.apply_plan(Namespace(project=self.project, proposal=path))

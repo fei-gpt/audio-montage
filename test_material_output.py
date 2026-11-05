@@ -40,3 +40,13 @@ class MaterialOutputTest(unittest.TestCase):
         self.assertEqual(doc['video_name'],'001.mp4')
         self.assertEqual(doc['origin']['source_sha256'],a['sha256'])
         self.assertEqual(doc['clip']['start'],0)
+
+    def test_bulk_review_updates_sidecar_and_skips_stale(self):
+        a,row=self.fixture('prepared')
+        stale=self.app.store.put('shot',self.w['id'],dict(row,id='stale-shot',stale=True))
+        result=self.app.review_all(self.p['id'],self.w['id'],{'content_confirmed':True})
+        self.assertEqual(result['passed'],1)
+        self.assertEqual(self.app.store.get('shot',stale['id'],self.w['id'])['review_decision'],'uncertain')
+        doc=json.loads(Path(a['path']+'.analysis.json').read_text(encoding='utf-8'))
+        self.assertTrue(doc['reviews'][0]['human_confirmed'])
+        with self.assertRaises(Problem):self.app.review_all(self.p['id'],self.b['id'],{})

@@ -148,7 +148,7 @@ class ContentPipelineIntegrationTest(unittest.TestCase):
 
     def prepare_task(self, name):
         root = self.root / name
-        c.prepare(Namespace(video=self.video, request='找出完整动作，排除严重遮挡', output=root))
+        c.prepare(Namespace(video=self.video, request='找出完整动作，排除严重遮挡', output=root, no_hypit=True))
         config = root / 'vision.fake.json'
         m.save(config, {'base_url': 'http://127.0.0.1:9/v1', 'model': 'fake-vision'})
         return root, root / 'task.json', config

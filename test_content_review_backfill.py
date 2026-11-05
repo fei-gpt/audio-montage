@@ -17,7 +17,7 @@ class ReviewBackfillTest(unittest.TestCase):
 
     def task(self):
         root = self.root / 'review-task'
-        c.prepare(Namespace(video=self.video, request='保留红色展示', output=root))
+        c.prepare(Namespace(video=self.video, request='保留红色展示', output=root, no_hypit=True))
         path = root / 'task.json'
         task = m.read(path)
         task['rights']['usage'] = 'allowed'

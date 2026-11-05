@@ -35,7 +35,11 @@ class WorkbenchTest(unittest.TestCase):
         for path in [self.a_dir,self.root,self.a_dir/'sub']:
             path.mkdir(exist_ok=True)
             with self.assertRaises(Problem):self.app.attach_library(self.p['id'],self.b['id'],str(path),'raw')
-        alias=self.root/'alias';alias.symlink_to(self.a_dir,target_is_directory=True)
+        alias=self.root/'alias'
+        try:alias.symlink_to(self.a_dir,target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc,'winerror',None)==1314:self.skipTest('Windows symbolic-link privilege unavailable')
+            raise
         with self.assertRaises(Problem):self.app.attach_library(self.p['id'],self.b['id'],str(alias),'raw')
         os.link(self.a_dir/'same.mp4',self.b_dir/'hardlink.mp4')
         self.app.attach_library(self.p['id'],self.b['id'],str(self.b_dir),'raw');scan=self.app.scan(self.p['id'],self.b['id'])
@@ -44,13 +48,16 @@ class WorkbenchTest(unittest.TestCase):
         a=self.attach();self.app.scan(self.p['id'],self.w['id']);self.assertEqual(len(self.app.store.all('asset',self.w['id'])),1)
         self.app.store.put('shot',self.w['id'],{'asset_id':a['id'],'stale':False})
         (self.a_dir/'same.mp4').unlink();self.app.scan(self.p['id'],self.w['id']);self.assertFalse(self.app.store.get('asset',a['id'],self.w['id'])['available'])
-        (self.a_dir/'escape.mp4').symlink_to(self.b_dir/'same.mp4')
+        try:(self.a_dir/'escape.mp4').symlink_to(self.b_dir/'same.mp4')
+        except OSError as exc:
+            if getattr(exc,'winerror',None)==1314:self.skipTest('Windows symbolic-link privilege unavailable')
+            raise
         scan=self.app.scan(self.p['id'],self.w['id']);self.assertTrue(scan['errors'])
         shutil.copy2(self.video,self.a_dir/'same.mp4');self.app.scan(self.p['id'],self.w['id']);self.assertTrue(self.app.store.all('shot',self.w['id'])[0]['stale'])
-    def test_default_deepseek_and_local_env_loader(self):
+    def test_default_codex_and_local_env_loader(self):
         from workbench.server import load_local_env
-        self.assertEqual(self.app.config()['model'],'deepseek-flash')
-        self.assertEqual(self.app.config()['api_key_env'],'DEEPSEEK_API_KEY')
+        self.assertEqual(self.app.config()['model'],'gpt-6-luna')
+        self.assertEqual(self.app.config()['provider'],'codex')
         env=self.root/'local-env';env.write_text('DEEPSEEK_API_KEY="local-test"\nHOME=/bad\nVISION_API_KEY=$(touch bad)\n')
         with patch.dict(os.environ,{'DEEPSEEK_API_KEY':'existing-test'}):
             home=os.environ.get('HOME');load_local_env(env)
@@ -60,9 +67,12 @@ class WorkbenchTest(unittest.TestCase):
         with self.assertRaises(Problem):self.app.set_config({'base_url':'https://api.deepseek.com','model':'deepseek-reasoner'})
 
     def test_no_config_does_not_call_model_or_fake_completion(self):
-        self.attach();j=self.app.create_job(self.p['id'],self.w['id'],'organize',True)
+        self.attach()
+        self.app.set_config({'provider':'codex','model':'gpt-6-luna'})
+        with patch('workbench.backend.shutil.which',return_value=None):
+            j=self.app.create_job(self.p['id'],self.w['id'],'organize',True)
         self.assertEqual(j['status'],'requires_configuration');self.assertEqual(j['progress'],0)
-        with self.assertRaises(Problem):self.app.resume(self.p['id'],self.w['id'],j['id'],True)
+        with patch('workbench.backend.shutil.which',return_value=None),self.assertRaises(Problem):self.app.resume(self.p['id'],self.w['id'],j['id'],True)
     def test_restart_and_migration_stay_unassigned(self):
         old={'products':[{'id':'old','name':'旧产品','sources':[{'name':'x.mp4'}],'shots':[{'id':'s','decision':'keep'}]}],'tasks':[{'productId':'old','name':'旧任务'}],'exports':[]}
         imported=self.app.migrate(old);self.assertFalse(imported['already_imported']);self.assertTrue(self.app.migrate(old)['already_imported'])
@@ -92,6 +102,7 @@ class WorkbenchTest(unittest.TestCase):
         answer={'suggested_name':'红色产品','appearance':['红色'],'claims':[{'text':'包装声称发光','source_id':source['id'],'page':None}],'demonstrations':['展示颜色'],'unknowns':['型号未知'],'conflicts':[],'references':[source['id']]}
         with patch('vision_api.call',return_value=answer):profile=self.app.understand(self.p['id'],True)
         self.assertEqual(profile['sources'][0]['id'],source['id']);self.assertEqual(self.app.store.get('source',source['id'],self.p['id'])['status'],'understood')
+        self.app.store.put('source',self.p['id'],{'kind':'link','name':'new reference','text':'new information','status':'awaiting_understanding'})
         answer=dict(answer,claims=[{'text':'捏造来源','source_id':'missing'}])
         with patch('vision_api.call',return_value=answer),self.assertRaises(Problem):self.app.understand(self.p['id'],True)
 
@@ -121,7 +132,7 @@ class WorkbenchTest(unittest.TestCase):
             if '先通览产品展示意图' in prompt:return {'subject':'红色物体','intent':'展示颜色','visible_result':'红色可见','unknowns':[]}
             if '返回 {"overview"' in prompt:return {'overview':'红色静态展示','requirements':{'hard':[],'preferences':[],'exclusions':[],'confirmed':True},'segments':[{'start':.1,'end':1.7,'facts':'红色画面','reason':'展示色彩','decision':'keep'}]}
             return {'facts':'红色画面','reason':'展示色彩','decision':'keep','boundary_reviewed':True,'assessment':{'base':base,'user':[]}}
-        with patch.dict(os.environ,{'WB_TEST_KEY':'fake'}),patch('vision_api.call',side_effect=model):
+        with patch.dict(os.environ,{'WB_TEST_KEY':'fake'}),patch('vision_api.call',side_effect=model),patch('hypit_adapter.analyze'):
             j=self.app.create_job(self.p['id'],self.w['id'],'organize',True,rights=True);self.app.run_job(j['id'],self.w['id'])
         j=self.app.store.get('job',j['id'],self.w['id']);self.assertEqual(j['status'],'awaiting_review',j.get('error'))
         shots=self.app.store.all('shot',self.w['id']);self.assertEqual(len(shots),1);shot=shots[0]
@@ -136,7 +147,7 @@ class WorkbenchTest(unittest.TestCase):
             if '先通览产品展示意图' in prompt:return {'subject':'红色','intent':'色彩','visible_result':'红色','unknowns':[]}
             if '返回 {"overview"' in prompt:return {'overview':'红色','requirements':{},'segments':[]}
             return {}
-        with patch.dict(os.environ,{'WB_TEST_KEY':'fake'}),patch('vision_api.call',side_effect=model):
+        with patch.dict(os.environ,{'WB_TEST_KEY':'fake'}),patch('vision_api.call',side_effect=model),patch('hypit_adapter.analyze'):
             j=self.app.create_job(self.p['id'],self.w['id'],'organize',True);self.app.run_job(j['id'],self.w['id'])
         shots=self.app.store.all('shot',self.w['id']);self.assertEqual(len(shots),1);self.assertEqual(shots[0]['start'],0);self.assertAlmostEqual(shots[0]['end'],2);self.assertEqual(shots[0]['review_decision'],'uncertain')
 

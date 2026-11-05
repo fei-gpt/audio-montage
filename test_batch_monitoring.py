@@ -44,3 +44,13 @@ class BatchMonitoringTest(unittest.TestCase):
         self.assertEqual(len(frames),12);self.assertIn('1.866667.jpg',[Path(f['path']).name for f in frames])
         self.assertTrue(all(Path(f['path']).is_file() for f in frames))
         self.assertTrue(all(t<end for t in sample_times(0,end,every)))
+
+    def test_pause_stops_before_next_asset_and_resume_keeps_checkpoint(self):
+        self.attach();w=self.w['id']
+        j=self.app.store.put('job',w,{'kind':'organize','scope':w,'workspace_id':w,'product_id':self.p['id'],'status':'queued','done':[],'allow_paid':True,'rights_allowed':True})
+        self.app.pause(self.p['id'],w,j['id'])
+        with patch.object(self.app,'process_asset') as process:self.app.run_job(j['id'],w)
+        process.assert_not_called()
+        self.assertEqual(self.app.store.get('job',j['id'],w)['status'],'interrupted')
+        self.app.resume(self.p['id'],w,j['id'],True,retry_failed=False)
+        self.assertFalse((self.app.root/'pause-requests'/(j['id']+'.json')).exists())

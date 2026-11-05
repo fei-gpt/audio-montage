@@ -90,12 +90,16 @@ class Handler(BaseHTTPRequestHandler):
             if method=='GET':return app.generation.status()
             if method=='POST':return app.generation.settings(b)
         if path=='/api/generation/voices' and method=='GET':return app.generation.voices()
+        if path=='/api/editing-modes' and method=='GET':return {'modes':['semantic','duration'],'version':1}
         if path=='/api/settings' and method=='POST':return app.set_config(b)
         if path=='/api/products' and method=='POST':return app.create_product(b.get('name',''))
         if path=='/api/migrate' and method=='POST':return app.migrate(b)
         if path=='/api/choose-folder' and method=='POST':
             from workbench.folder_picker import choose_folder
             return choose_folder(b.get('initial',''))
+        if path=='/api/browse-folders' and method=='POST':
+            from workbench.folder_picker import browse_folders
+            return browse_folders(b.get('path',''))
         m=re.fullmatch(r'/api/products/([a-f0-9]+)(?:/(.*))?',path)
         if not m:raise Problem('接口不存在',404)
         p,tail=m.groups();app.product(p)
@@ -138,6 +142,8 @@ class Handler(BaseHTTPRequestHandler):
         if rest and rest.startswith('jobs/') and rest.endswith('/resume') and method=='POST':return app.resume(p,w,rest.split('/')[1],b.get('allow_paid'),b.get('retry_failed',False),b.get('continue_on_error'),b.get('asset_ids'))
         if rest=='search' and method=='GET':
             query=q.get('q',[''])[0].lower();return {'shots':[x for x in s.all('shot',w) if query in (x.get('facts','')+' '+x.get('reason','')).lower() and not x.get('stale')]}
+        if rest=='shots/review-all' and method=='POST':return app.review_all(p,w,b)
+        if rest and rest.startswith('jobs/') and rest.endswith('/pause') and method=='POST':return app.pause(p,w,rest.split('/')[1])
         if rest and rest.startswith('shots/') and method=='PATCH':return app.review(p,w,rest.split('/')[1],b)
         if rest=='export' and method=='POST':return app.export(p,w,b.get('shot_ids',[]))
         raise Problem('接口不存在',404)

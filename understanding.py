@@ -76,7 +76,9 @@ def sample_times(start,end,every):
     index=0
     while True:
         value=start+index*every
-        if value>=end-1e-9:break
+        # Container durations and evidence filenames have microsecond precision.
+        # Do not seek to an exclusive end rounded upward by ffprobe.
+        if value>=end-1e-6:break
         yield value
         index+=1
 

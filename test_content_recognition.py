@@ -11,7 +11,7 @@ class ContentExtractionTest(unittest.TestCase):
 
     def test_multiple_ranges_and_resume(self):
         root = self.root / 'content'
-        c.prepare(Namespace(video=self.video, request='保留红色展示的两个区间', output=root))
+        c.prepare(Namespace(video=self.video, request='保留红色展示的两个区间', output=root, no_hypit=True))
         task_path = root / 'task.json'
         task = m.read(task_path)
         with self.assertRaises(ValueError):
@@ -44,7 +44,7 @@ class ContentExtractionTest(unittest.TestCase):
                '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0[v]', '-map', '[v]', '-map', '2:a',
                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', source])
         root = self.root / 'two-task'
-        c.prepare(Namespace(video=source, request='分别提取两种画面', output=root))
+        c.prepare(Namespace(video=source, request='分别提取两种画面', output=root, no_hypit=True))
         path = root / 'task.json'
         task = m.read(path)
         evidence = m.read(next((root / 'evidence').glob('*/observation-*.json')))['evidence']
@@ -108,7 +108,7 @@ class ContentExtractionTest(unittest.TestCase):
     def test_four_second_limit_routes_complete_long_action_to_review(self):
         m.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=180x320:r=30:d=6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', self.video])
         root = self.root / 'duration-task'
-        c.prepare(Namespace(video=self.video, request='完整动作', output=root))
+        c.prepare(Namespace(video=self.video, request='完整动作', output=root, no_hypit=True))
         path = root / 'task.json'
         task = m.read(path)
         task['rights']['usage'] = 'allowed'
@@ -145,7 +145,7 @@ class ShotContinuityExportTest(unittest.TestCase):
     def task(self):
         m.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=180x320:r=30:d=6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', self.video])
         root = self.root / 'continuity-task'
-        c.prepare(Namespace(video=self.video, request='保留完整展示效果', output=root))
+        c.prepare(Namespace(video=self.video, request='保留完整展示效果', output=root, no_hypit=True))
         path = root / 'task.json'
         task = m.read(path)
         task['rights']['usage'] = 'allowed'

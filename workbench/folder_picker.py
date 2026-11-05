@@ -7,6 +7,33 @@ from pathlib import Path
 from workbench.backend import Problem
 
 
+def browse_folders(path=''):
+    """Read folder names only; the loopback server authenticates this endpoint."""
+    if not path:
+        roots = [Path(f'{letter}:\\') for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'] if sys.platform == 'win32' else [Path('/')]
+        return {'path': '', 'parent': None, 'folders': [
+            {'name': str(root), 'path': str(root)} for root in roots if root.is_dir()]}
+    folder = Path(path).expanduser()
+    if not folder.is_absolute():
+        raise Problem('请选择磁盘或填写完整的文件夹路径')
+    try:
+        folder = folder.resolve(strict=True)
+        if not folder.is_dir():
+            raise Problem('该路径不是文件夹')
+        children = []
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir():
+                        children.append({'name': entry.name, 'path': str(folder / entry.name)})
+                except OSError:
+                    continue
+        children.sort(key=lambda item: item['name'].casefold())
+    except OSError:
+        raise Problem('无法访问该文件夹，请选择其他位置') from None
+    return {'path': str(folder), 'parent': str(folder.parent) if folder.parent != folder else '', 'folders': children}
+
+
 WINDOWS_SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)

@@ -26,3 +26,14 @@ assert.ok(!context.generationSection().includes('<video'));
 gen.status='needs_attention';gen.intro_approval={sha256:'hash'};context.generationDetail('g');
 assert.ok(modal.includes('generationResume'));assert.ok(!modal.includes('id="generationPoll"'));
 console.log('AI generation UI confirmation gate, pending-query and continuation recovery passed');
+
+workspace.shots=[];workspace.assets=[];
+context.editBatchDialog();
+assert.ok(modal.includes('name="matching_mode"'));
+assert.ok(modal.includes('value="duration"'));assert.ok(modal.includes('value="semantic"'));
+elements['#editClips'].onchange({target:{files:[{name:'intro.mp4'},{name:'outro.mp4'}]}});
+assert.equal((elements['#editClipPositions'].innerHTML.match(/ required/g)||[]).length,2);
+assert.equal((elements['#editClipPositions'].innerHTML.match(/disabled selected/g)||[]).length,2);
+assert.ok(elements['#editClipPositions'].innerHTML.includes('value="intro"'));
+assert.ok(elements['#editClipPositions'].innerHTML.includes('value="outro"'));
+console.log('Matching-mode choices and mandatory per-clip placement passed');

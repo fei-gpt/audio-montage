@@ -790,7 +790,8 @@ def render(args):
         actual = float(result['format']['duration'])
         if abs(actual - config['duration']) > max(0.1, 2 / fps):
             raise ValueError('输出时长检查失败')
-        staged.rename(output)
+        # archive(output) preserved the previous version; replace works on Windows too.
+        staged.replace(output)
     export_srt(root, segments)
     render_report = {'output': str(output), 'duration': actual,
                                  'expected_duration': config['duration'], 'decode_passed': True,
