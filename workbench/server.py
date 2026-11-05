@@ -118,6 +118,7 @@ class Handler(BaseHTTPRequestHandler):
         m=re.fullmatch(r'workspaces/([a-f0-9]+)(?:/(.*))?',tail or '')
         if not m:raise Problem('接口不存在',404)
         w,rest=m.groups();ws=app.workspace(p,w)
+        if rest=='editing/pairs/inspect' and method=='POST':return app.editing.inspect_pairs(p,w,b)
         if rest=='generation' and method=='POST':return app.generation.create(p,w,b)
         gen=re.fullmatch(r'generation/([a-f0-9]{32})(?:/([a-z-]+))?',rest or '')
         if gen:

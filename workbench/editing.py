@@ -106,6 +106,13 @@ class Editing:
                 'script':script,'status':'ready','stage':'等待识别配音时间轴与规划','created_at':now()})
         save(root/'rules.json',batch);return self.store.put('edit_batch',w,batch)
 
+    def inspect_pairs(self,p,w,body):
+        self.app.workspace(p,w)
+        from workbench.pairing import inspect_folder
+        result=inspect_folder(self.directory(w,body.get('input_path','')))
+        if len(result['rows'])>1000:raise Problem('每批最多1000组，请分批处理')
+        return result
+
     def create(self,p,w,body):
         if 'narrations' in body:return self.create_uploaded(p,w,body)
         ws=self.app.workspace(p,w)
@@ -124,12 +131,23 @@ class Editing:
                 grouped.setdefault(f.stem.casefold(),{}).setdefault(f.suffix.lower(),[]).append(f)
         if not grouped:raise Problem('文件夹内没有 MP4 或 MP3（只读取当前层）')
         if len(grouped)>1000:raise Problem('每批最多1000组，请分批处理')
-        batch={'id':bid,'product_id':p,'workspace_id':w,'input_path':str(root),'output_path':str(output),
-               'created_at':now(),'rules':{'mode':mode,'language':language,'keep_original_audio':body.get('keep_original_audio') is True,
+        paired_mode=body.get('input_mode')=='paired'
+        if paired_mode:
+            report=self.inspect_pairs(p,w,body)
+            if not body.get('pairing_snapshot') or report['snapshot']!=body['pairing_snapshot']:raise Problem('文件夹内容已变化，请重新检查配对',409)
+            if not report['paired_count']:raise Problem('没有完整的同名MP4和MP3配对')
+            grouped={key:files for key,files in grouped.items() if len(files.get('.mp4',[]))==len(files.get('.mp3',[]))==1}
+        matching=body.get('matching_mode','duration' if paired_mode else 'semantic')
+        basis=body.get('timing_basis','audio_duration' if paired_mode else 'sentences')
+        if matching not in {'duration','semantic'} or basis not in {'audio_duration','sentences'}:raise Problem('匹配方式或时间依据无效')
+        if matching=='semantic' and basis!='sentences':raise Problem('语义匹配需要实际配音时间轴')
+        batch={'id':bid,'product_id':p,'workspace_id':w,'input_mode':'paired','input_path':str(root),'output_path':str(output),
+               'created_at':now(),'rules':{'matching_mode':matching,'timing_basis':basis,'auto_preview':body.get('auto_preview') is True,'mode':mode,'language':language,'keep_original_audio':body.get('keep_original_audio') is True,
                'rights_allowed':body.get('rights_allowed') is True,'timing_confirmed':body.get('timing_confirmed') is True,
                'model_path':str(body.get('model_path','')),'request':str(body.get('request',''))[:10000],
                'width':1080,'height':1920,'fps':30,'batch_dedup':True},
                'product_profile':self.app.product(p).get('profile',{})}
+        if paired_mode:batch['pairing_report']=report
         self.folder(w,bid).mkdir(parents=True)
         for key,files in sorted(grouped.items(),key=lambda x:natural(x[0])):
             task={'id':uid(),'batch_id':bid,'product_id':p,'workspace_id':w,'name':key,'status':'ready','stage':'等待规划','created_at':now()}
@@ -159,6 +177,9 @@ class Editing:
         portrait_geometry(probe(t['intro']))
 
     def timeline(self,b,t):
+        if b['rules'].get('matching_mode')=='duration' and b['rules'].get('timing_basis')=='audio_duration':
+            return {'audio_sha256':t['audio_sha256'],'segments':[{'start':0,'end':t['audio_duration'],'text':''}],
+                    'source':'audio_duration','human_reviewed':False,'note':'只读取实际音频时长，没有转写或推测字幕'}
         cache=self.app.wroot(t['workspace_id'])/'editing-audio'
         key=t['audio_sha256']+'-'+b['rules']['language'];dest=cache/(key+'.json')
         if dest.exists():
@@ -303,7 +324,7 @@ class Editing:
         if not preview:
             save(folder/'制作记录.json',{'rules':b['rules'],'input':{k:t[k] for k in ('intro','audio','intro_sha256','audio_sha256','script') if k in t},'clips':b.get('clips',[]),'music':b.get('music'),
                                       'timeline':t['timeline'],'plan':t['plan'],'validation':report,'human_reviewed':t.get('human_reviewed',False)})
-            offset=report['intro_seconds'];segments=t['timeline']['segments']
+            offset=report['intro_seconds'];segments=[s for s in t['timeline']['segments'] if s.get('text','').strip()]
             (folder/'captions.srt').write_text('\n\n'.join(f'{i}\n{srt_time(s["start"]+offset)} --> {srt_time(s["end"]+offset)}\n{s["text"]}' for i,s in enumerate(segments,1))+'\n',encoding='utf-8')
         return t
 
