@@ -13,6 +13,8 @@ facts、reason、intent、visible_result各用一句短句，避免重复；仅�
 差异来自本片可见特征；没有其他视频证据时不声称已做跨视频对比。切镜和动作边界仍按证据判断。
 '''
 
+from product_display import DISPLAY_PROMPT
+VISUAL_PROMPT += DISPLAY_PROMPT
 
 
 def document_path(source):
