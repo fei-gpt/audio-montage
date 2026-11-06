@@ -112,6 +112,25 @@ class EditingTest(unittest.TestCase):
         b=self.create(mode='direct')
         with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')
         t=self.task(b);self.assertEqual(t['status'],'completed',t.get('error'));self.assertFalse(t.get('human_reviewed',False))
+
+    def test_short_intro_audio_overhang_survives_the_cut(self):
+        import array
+        from workbench.edit_media import render
+        intro=self.root/'short-overhang.mp4'
+        voice=self.root/'silent.wav'
+        run(['ffmpeg','-v','error','-i',self.intro,'-f','lavfi','-i','sine=frequency=440:duration=1.09',
+             '-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac',intro])
+        run(['ffmpeg','-v','error','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t','1',voice])
+        out,report=render(intro,voice,[dict(path=self.clip,start=0,frames=30)],self.root/'tail-preview',True)
+        self.assertEqual(report['duration'],2)
+        self.assertAlmostEqual(report['intro_audio_tail_seconds'],.09,delta=.01)
+        def peak(start):
+            samples=array.array('f')
+            samples.frombytes(run(['ffmpeg','-v','error','-i',out,'-ss',start,'-t','0.04',
+                                   '-vn','-ac','1','-f','f32le','-']).stdout)
+            return max(map(abs,samples))
+        self.assertGreater(peak('1.02'),.02)
+        self.assertLess(peak('1.25'),.002)
     def test_batch_duplicate_intervals_blocked(self):
         shutil.copy2(self.inputs/'1.mp4',self.inputs/'2.mp4');shutil.copy2(self.inputs/'1.mp3',self.inputs/'2.mp3');shutil.copy2(self.inputs/'1.srt',self.inputs/'2.srt')
         b=self.create()

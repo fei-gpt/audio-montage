@@ -52,3 +52,15 @@ class RandomSelectionTest(unittest.TestCase):
         starts={plan_by_duration(candidates,{'segments':[{'end':1}]},1,seed=i)['parts'][0]['start'] for i in range(30)}
         self.assertGreater(len(starts),3)
         self.assertTrue(all(0<=s<=1 for s in starts))
+
+    def test_batch_compares_feasible_plans_without_losing_last_valid_choice(self):
+        pool = self.candidates()
+        timeline = {'segments': [{'end': 1}]}
+        args = dict(seed=4, free_selection=True)
+        first = plan_by_duration(pool, timeline, 1, **args)['parts']
+        args['batch_history'] = [first]
+        alternative = plan_by_duration(pool, timeline, 1, **args)['parts']
+        self.assertNotEqual(first[0]['asset_sha256'], alternative[0]['asset_sha256'])
+        # Three nodes allow the original valid plan but no additional search.
+        limited = plan_by_duration(pool, timeline, 1, max_nodes=3, **args)
+        self.assertEqual(limited['parts'], first)

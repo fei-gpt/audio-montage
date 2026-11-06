@@ -29,8 +29,31 @@ def compact_number_run(names):
     return False
 
 
-def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, accept=None, seed=None, ending_counts=None, batch_counts=None,free_selection=False):
+def _batch_overlap_score(parts,history):
+    """Each plan uses a source at most once in free selection mode."""
+    current={p['asset_sha256']:p for p in parts}
+    duration=sum(p['frames'] for p in parts)
+    ratios=[]
+    for other in history:
+        shared=0
+        for old in other:
+            part=current.get(old['asset_sha256'])
+            if part is not None:
+                start=max(round(part['start']*30),round(old['start']*30))
+                end=min(round(part['start']*30)+part['frames'],round(old['start']*30)+old['frames'])
+                shared+=max(0,end-start)
+        ratios.append(shared/min(duration,sum(p['frames'] for p in other)))
+    endings=sum(parts[-1]['asset_sha256']==plan[-1]['asset_sha256'] for plan in history)
+    return max(ratios,default=0),endings,sum(ratios)
+
+
+def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, accept=None, seed=None, ending_counts=None, batch_counts=None,free_selection=False,batch_history=()):
     rng=random.Random(seed)
+    planned=batch_counts or {}
+    usage_priority={
+        c['asset_sha256']:(planned.get(c['asset_sha256'],0),c.get('usage_count',0))
+        for c in candidates
+    } if free_selection else {}
     total=math.ceil(duration*30-1e-7)
     boundaries=sorted({min(total,max(0,math.ceil(s['end']*30-1e-7))) for s in timeline['segments']}|{total})
     budgets=[];previous=0
@@ -72,11 +95,10 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
             # Preserve random order among tied choices. Try alternatives before
             # finishing on a frequently used ending, including multi-shot fits.
             options.sort(key=lambda p: ending_counts.get(p['asset_sha256'],0) if p['frames']==remaining else 0)
-        if batch_counts:
+        if batch_counts and not free_selection:
             options.sort(key=lambda part: batch_counts.get(part['asset_sha256'],0))
         if free_selection:
-            counts={c['asset_sha256']:c.get('usage_count',0)+(batch_counts or {}).get(c['asset_sha256'],0) for c in candidates}
-            options.sort(key=lambda part:counts[part['asset_sha256']])
+            options.sort(key=lambda part:usage_priority[part['asset_sha256']])
             used_sources={p['asset_sha256'] for p in parts}
             options=[p for p in options if p['asset_sha256'] not in used_sources]
         for part in options:
@@ -85,4 +107,13 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
         return None
     result=search(0,budgets[0] if budgets else 0,[],list(used))
     if not result:raise ValueError('现有素材或安全裁切范围无法在搜索范围内匹配断句时长，请补充素材或确认安全裁切范围')
+    if free_selection and batch_history:
+        score=_batch_overlap_score(result,batch_history)
+        for _ in range(12):
+            if score==(0,0,0) or nodes>=max_nodes:break
+            alternate=search(0,budgets[0],[],list(used))
+            if not alternate:break
+            alternate_score=_batch_overlap_score(alternate,batch_history)
+            if alternate_score<score:
+                result,score=alternate,alternate_score
     return {'parts':result,'matching_mode':'duration','gaps':[]}

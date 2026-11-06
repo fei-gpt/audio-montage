@@ -22,12 +22,19 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
     head=[c['path'] for c in clips if c['position']=='intro'];tail=[c['path'] for c in clips if c['position']=='outro']
     if intro:head.insert(0,str(intro))
     sequence=[];head_frames=0;tail_frames=0
+    intro_audio_tail=None
     for role,files in [('intro',head),('outro',tail)]:
         for path in files:
             pi=probe(path);portrait_geometry(pi);seconds=media_duration(pi,'video')
-            if any(s['codec_type']=='audio' for s in pi['streams']) and media_duration(pi,'audio')>seconds+.05:
-                raise ValueError('开头或结尾片段的音频长于画面，请先确认边界；不会自动补尾帧')
             frames=math.ceil(seconds*30-1e-7)
+            if any(s['codec_type']=='audio' for s in pi['streams']):
+                audio_seconds=media_duration(pi,'audio')
+                excess=audio_seconds-frames/30
+                if role=='intro' and not sequence and intro and 0<excess<=min(.12,body_frames/30):
+                    # Preserve short container/audio tails at the cut without extending video.
+                    intro_audio_tail=(path,frames,excess)
+                elif audio_seconds>seconds+.05:
+                    raise ValueError('开头或结尾片段的音频长于画面，请先确认边界；不会自动补尾帧')
             if role=='intro':head_frames+=frames
             else:tail_frames+=frames
             sequence.append({'path':path,'start':0,'frames':frames,'role':role})
@@ -74,6 +81,13 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
                   f'volume={music_volume},apad,atrim=duration={body_frames/30},asetpts=PTS-STARTPTS,'
                   f'adelay={head_frames*1600}S:all=1,apad,atrim=duration={expected}[music];')
         mix+='[music]';count+=1
+    if intro_audio_tail:
+        path,cut,excess=intro_audio_tail
+        cmd+=['-i',path]
+        stream=4 if music else 3
+        filters+=(f'[{stream}:a:0]aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,'
+                  f'atrim=start_sample={cut*1600},asetpts=PTS-STARTPTS,adelay={cut*1600}S:all=1[headtail];')
+        mix+='[headtail]';count+=1
     filters+=mix+f'amix=inputs={count}:duration=first:normalize=0,alimiter=limit=0.98:level=false:latency=1[a]'
     out=folder/('preview.mp4' if preview else 'final.mp4')
     run(cmd+['-filter_complex',filters,'-map','0:v:0','-map','[a]','-c:v','copy','-c:a','aac',
@@ -86,5 +100,6 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
             'width':width,'height':height,'fps':30,'sha256':fingerprint(out),'decode_checked':True,
             'source_files_unchanged':True,'intro_audio_preserved':bookend_audio,'bookends_preserved':True,
             'music_body_only':bool(music),'music_volume':music_volume if music else 0,'music_looped':False,
+            'intro_audio_tail_seconds':intro_audio_tail[2] if intro_audio_tail else 0,
             'keep_original_audio':keep_original_audio,'human_reviewed':False}
     save(folder/'validation.json',report);return out,report

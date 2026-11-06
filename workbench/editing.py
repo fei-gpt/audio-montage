@@ -383,13 +383,16 @@ class Editing:
                 try:self.duplicate_check(t,parts);return True
                 except ValueError:return False
             ending_counts={}
+            batch_history=[]
             for previous_task in self.history(t):
                 previous_parts=previous_task.get('plan',{}).get('parts',[])
                 if previous_parts:
                     sha=previous_parts[-1]['asset_sha256']
                     ending_counts[sha]=ending_counts.get(sha,0)+1
+                    if batch_counts is not None and previous_task['batch_id']==t['batch_id']:
+                        batch_history.append(previous_parts)
             proposal=plan_by_duration(candidates,timeline,t['audio_duration'],used,accept=accept,seed=t['selection_seed'],ending_counts=ending_counts,batch_counts=batch_counts,
-                                      free_selection=b['rules'].get('use_prepared_files',False))
+                                      free_selection=b['rules'].get('use_prepared_files',False),batch_history=batch_history)
             self.vary_plan(b,t,proposal)
             t['plan']=self.validate_plan(b,t,proposal);t['plan']['matching_mode']='duration';t['plan']['semantic_review']='not_requested'
             t['plan']['selection_seed']=t['selection_seed']
