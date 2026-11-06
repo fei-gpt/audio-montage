@@ -16,10 +16,10 @@ Windows 上已有完整 FFmpeg 时，可运行 `scripts/install-media.ps1 -Sourc
 
 ```sh
 python3 -m pip install --target .workbench-deps -r requirements-workbench.txt
-python3 -m workbench.server
+python3 -m workbench.server --port 8768
 ```
 
-打开 http://127.0.0.1:8766/ 。只监听本机。可用 `--port`、`--data` 指定端口与持久化目录；默认 `.workbench-data`，请自行备份整个目录。旧的“打开工作台.command”也已指向新版（使用 8768，避开旧原型占用）。端口被占用时可运行 `python3 -m workbench.server --port 8768`。旧浏览器数据依赖原端口；跨端口迁移请从旧原型导出 JSON 后导入。不要同时运行两个实例操作同一数据目录。
+打开 http://127.0.0.1:8768/ 。只监听本机。可用 `--port`、`--data` 指定端口与持久化目录；默认 `.workbench-data`，请自行备份整个目录。旧的“打开工作台.command”也已指向新版（使用 8768，避开旧原型占用）。端口被占用时可运行 `python3 -m workbench.server --port 8768`。旧浏览器数据依赖原端口；跨端口迁移请从旧原型导出 JSON 后导入。不要同时运行两个实例操作同一数据目录。
 
 ## 三步使用
 
@@ -102,3 +102,8 @@ python3 -m workbench.server
 先点击“检查整批配对”：列出完整组、缺失项及重名冲突。创建时跳过命名不完整或冲突组，保存整批检查报告；再次校验目录快照，文件变化需重新检查。创建后进一步检查媒体有效性及严格9:16，每条保留自己的完整前段MP4与原声。
 
 该入口默认“整条配音时长”：只读取MP3实际时长，不转写、不作文本理解、不调用模型。可选“断句对齐”使用本地时间轴。选择预览或直接输出后，“创建并批量剪辑”将整批排入队列，素材区间批内不重复，不循环和不变速，输出到独立目录。
+
+
+## 新电脑交接
+
+先双击 `check-workbench.cmd` 或运行 `python -m workbench.preflight`。只读离线检查Python、媒体工具、Codex路径、本地ASR和不可访问的素材路径，不启动任务或调用模型。完整安装与迁移步骤见 [新电脑交接](HANDOFF.md)。

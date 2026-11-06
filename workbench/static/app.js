@@ -30,7 +30,41 @@ function attachDialog(){dialog('接入已有素材库',`<form id="attachForm"><l
 function confirmRun(fn,organize=false,retry=false,override=null){const cap=override?{...state.capabilities,vision_ready:true,config:override}:state.capabilities;if(!cap.vision_ready){dialog('识别服务尚未配置',`<p>需要补充：</p><ul>${cap.missing.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><p>资料与素材库已保留，不会显示虚假的处理成功。</p><button id="goConfig" class="primary">配置识别服务</button>`);$('#goConfig').onclick=()=>{$('#dialog').close();settings()};return}dialog('开始'+(organize?'整理素材':'理解资料'),`<p>将资料${organize?'和视频抽帧':''}发送到你配置的模型：</p><p><strong>${esc(cap.config.model)}</strong><br><span class="file-path">${esc(cap.config.base_url)}</span></p><label class="check-label"><input id="allowPaid" type="checkbox">${cap.config.provider==='codex'||override?'允许本次使用Codex账号额度，不自动更换服务或模型。':'允许本次发送资料并可能产生API费用，不自动更换服务或模型。'}</label>${organize?`<label class="check-label"><input id="rights" type="checkbox">已确认这些素材可用于当前账号（未确认也可分析，但不能正式导出）。</label>`:''}${retry?`<label class="check-label"><input id="retryFailed" type="checkbox">重新发送未完成请求（可能再次计费；保留旧记录）</label>`:''}<button id="confirmStart" class="primary">确认开始</button>`);$('#confirmStart').onclick=()=>action(async()=>{if(!$('#allowPaid').checked)throw Error('请明确允许本次模型调用');await fn({allow_paid:true,rights_allowed:$('#rights')?.checked||false,retry_failed:$('#retryFailed')?.checked||false});$('#dialog').close();toast('后台任务已启动，进度会实际更新。')})}
 function bindPreviews(){document.querySelectorAll('[data-preview]').forEach(b=>b.onclick=()=>dialog('当前账号素材预览',`<video controls playsinline autoplay class="preview-video" src="${esc(b.dataset.preview)}"></video>`))}
 function results(){const w=W();$('#content').innerHTML=accountSelector()+(!w?'<div class="panel empty-state">选择账号查看该账号的整理结果。</div>':`<div class="section-heading"><h2>${esc(w.name)}的整理结果</h2><div class="inline"><button id="useInEditing">使用当前账号素材制作视频</button><button id="refreshResults">刷新结果</button></div></div>${w.jobs.slice(-1).map(jobHTML).join('')}${w.jobs.length>1?`<details><summary>历史任务（${w.jobs.length-1}）</summary>${w.jobs.slice(0,-1).map(jobHTML).join('')}</details>`:''}<div class="meta-box">已剪好的片段：整理结果与审核意见保存到原视频旁的 JSON，无需再次导出。待处理原视频：确认镜头后导出片段，并为每个导出视频保存 JSON。</div><div class="toolbar"><label class="search"><input id="shotSearch" placeholder="在当前账号内搜索镜头"></label>${w.assets.some(a=>a.kind==='raw')?'<button class="primary" id="exportShots">导出原片已确认镜头 + JSON</button>':''}</div><div id="shots" class="shot-list"></div>${w.exports.length||w.assets.some(a=>a.kind==='raw')?`<section class="panel recent"><h2>当前账号导出记录</h2>${w.exports.map(e=>`<div class="reference"><strong>${esc(e.created_at)}</strong><p>${e.files.map((f,i)=>`<a href="${esc(f.media_url)}" download>片段 ${i+1}</a>`).join('　')}</p></div>`).join('')||'<p class="muted">还没有导出文件。</p>'}</section>`:''}`);bindAccounts();if(!w)return;$('#useInEditing').onclick=()=>{location.hash='editing';render()};$('#refreshResults').onclick=()=>refresh();$('#shotSearch').oninput=e=>renderShots(e.target.value);$('#exportShots')?.addEventListener('click',()=>action(async()=>{const ids=w.shots.filter(s=>s.review_decision==='keep'&&!s.stale&&w.assets.some(a=>a.id===s.asset_id&&a.kind==='raw')).map(s=>s.id);await api(`${wb()}/export`,'POST',{shot_ids:ids});toast('原片镜头已导出，每条视频旁均已保存 JSON。')}));renderShots();bindJobs()}
-function bindShotReviewButtons(){document.querySelectorAll('[data-review]').forEach(b=>b.onclick=()=>{const keep=b.dataset.value==='keep';dialog('保存审核意见',`<form id="reviewForm"><label class="field"><span>意见或选区问题</span><textarea name="note"></textarea></label><details><summary>修正事实或选区（可选，不跨切镜）</summary><label class="field"><span>画面事实</span><textarea name="facts">${esc(W().shots.find(s=>s.id===b.dataset.review).facts||'')}</textarea></label><div class="inline"><label class="field"><span>起点（秒）</span><input name="start" type="number" step="0.001" value="${W().shots.find(s=>s.id===b.dataset.review).start}"></label><label class="field"><span>终点（秒）</span><input name="end" type="number" step="0.001" value="${W().shots.find(s=>s.id===b.dataset.review).end}"></label></div><label class="field"><span>安全裁切区间 JSON（可选；只有确认区间内任意裁切均不会截断必要动作时填写）</span><textarea name="safe_trim_ranges" placeholder='例如 [{"start":0,"end":2}]；没有安全范围时留空'>${esc(JSON.stringify(W().shots.find(s=>s.id===b.dataset.review).safe_trim_ranges||[]))}</textarea></label></details>${keep?'<label class="check-label"><input id="reviewConfirm" type="checkbox" required>我已实际核对本段内容、真实切镜、边界和展示效果。</label>':''}<button class="primary">保存${keep?'保留':'意见'}</button></form>`);$('#reviewForm').onsubmit=e=>{e.preventDefault();action(async()=>{await api(`${wb()}/shots/${b.dataset.review}`,'PATCH',{decision:b.dataset.value,note:new FormData(e.target).get('note'),facts:new FormData(e.target).get('facts'),start:Number(new FormData(e.target).get('start')),end:Number(new FormData(e.target).get('end')),content_confirmed:$('#reviewConfirm')?.checked||false,safe_trim_ranges:JSON.parse(new FormData(e.target).get('safe_trim_ranges')||'[]')});$('#dialog').close()})}})}
+function bindShotReviewButtons(){
+ document.querySelectorAll('[data-review]').forEach(b=>b.onclick=()=>{
+  const shot=W().shots.find(s=>s.id===b.dataset.review),keep=b.dataset.value==='keep';
+  dialog('保存审核意见',`<form id="reviewForm">
+   <label class="field"><span>意见或选区问题</span><textarea name="note">${esc(shot.review_note||'')}</textarea></label>
+   <details><summary>修正事实或选区（可选，不跨切镜）</summary>
+    <label class="field"><span>画面事实</span><textarea name="facts">${esc(shot.facts||'')}</textarea></label>
+    <div class="inline"><label class="field"><span>起点（秒）</span><input name="start" type="number" step="0.001" required value="${shot.start}"></label><label class="field"><span>终点（秒）</span><input name="end" type="number" step="0.001" required value="${shot.end}"></label></div>
+   </details>
+   ${keep?`<fieldset><legend>允许裁切的时间区间（可选）</legend>
+    <p class="small">填写原视频中的秒数。仅添加已核对、区间内裁切不会截断必要动作的范围；留空时只使用完整镜头。全部通过审核不会自动开放裁切。</p>
+    <div id="trimRanges"></div><button type="button" id="addTrimRange">＋ 添加时间区间</button>
+   </fieldset><label class="check-label"><input id="reviewConfirm" type="checkbox" required>我已实际核对本段内容、真实切镜、边界和展示效果；填写的区间可安全裁切。</label>`:''}
+   <button class="primary">保存${keep?'保留':'意见'}</button></form>`);
+  const form=$('#reviewForm');
+  if(keep){
+   const add=(range={})=>{
+    if($('#trimRanges').children.length>=30){toast('最多添加30组时间区间');return}
+    const row=document.createElement('div');row.className='inline';row.dataset.trimRow='';
+    row.innerHTML=`<label class="field"><span>可裁切起点（秒）</span><input data-trim-start type="number" step="0.001" min="0" required value="${esc(range.start??'')}"></label><label class="field"><span>可裁切终点（秒）</span><input data-trim-end type="number" step="0.001" min="0" required value="${esc(range.end??'')}"></label><button type="button" data-remove-trim>删除区间</button>`;
+    row.querySelector('[data-remove-trim]').onclick=()=>row.remove();$('#trimRanges').append(row);
+   };
+   (shot.safe_trim_ranges||[]).forEach(add);$('#addTrimRange').onclick=()=>add();
+  }
+  form.onsubmit=e=>{e.preventDefault();action(async()=>{
+   const fields=new FormData(form),start=Number(fields.get('start')),end=Number(fields.get('end'));
+   const body={decision:b.dataset.value,note:fields.get('note'),facts:fields.get('facts'),start,end,content_confirmed:$('#reviewConfirm')?.checked||false};
+   if(keep){
+    body.safe_trim_ranges=[...form.querySelectorAll('[data-trim-row]')].map(row=>({start:Number(row.querySelector('[data-trim-start]').value),end:Number(row.querySelector('[data-trim-end]').value)}));
+    if(body.safe_trim_ranges.some(r=>!Number.isFinite(r.start)||!Number.isFinite(r.end)||r.start<start||r.start>=r.end||r.end>end))throw Error('裁切起止时间必须位于当前镜头内，且终点大于起点');
+   }
+   await api(`${wb()}/shots/${b.dataset.review}`,'PATCH',body);$('#dialog').close();
+  })};
+ });
+}
 function settings(){
 const c=state.capabilities.config;
 if(c.provider==='codex'){dialog('识别服务设置',`<div class="meta-box"><strong>Codex · GPT-6-Luna</strong><p>产品资料理解、素材分析和剪辑选片默认使用此模型。使用已登录的Codex账号额度，无需填写DeepSeek密钥。</p><p>连接失败或额度不足时保留任务，不自动更换服务或模型。</p></div><button id="keepCodex" class="primary">保存当前设置</button>`);$('#keepCodex').onclick=()=>action(async()=>{await api('/api/settings','POST',{provider:'codex',model:'gpt-6-luna'});$('#dialog').close()});return}

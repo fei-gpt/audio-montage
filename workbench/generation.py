@@ -219,7 +219,8 @@ class Generation:
         if not g.get('editing_batch_id'):
             batch=edit.create(p,w,{'narrations':[{'id':g['uploads']['audio'],'script':g['script']['continuation_copy']}],
                 'clips':[{'id':g['uploads']['intro'],'position':'intro'}],'mode':g['mode'],'rights_allowed':True,
-                'language':g['language'],'request':g['script']['visual_requirements'],'auto_preview':True})
+                'language':g['language'],'request':g['script']['visual_requirements'],
+                'matching_mode':'semantic','auto_preview':True})
             g['editing_batch_id']=batch['id'];self.put(g)
         cache=self.app.wroot(w)/'editing-audio'/(timing_data['audio_sha256']+'-'+g['language']+'.json');save(cache,timing_data)
         # Handoff is persisted before queueing so a restart never recreates paid assets.

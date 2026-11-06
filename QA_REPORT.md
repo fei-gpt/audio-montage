@@ -43,3 +43,17 @@ Browser plugin not available，使用临时Playwright 1.64.1及已安装Chrome�
 ## 批量配对入口补充验证
 
 新增同名MP4/MP3批量导入、文件夹快照核对和配对报告保存。相关24项后端测试通过；元数据报告补充后5项配对测试复验通过。整条配音时长路径用合成媒体完成输出，断言没有调用模型或ASR。浏览器在隔离8879实例验证2组有效配对、1组缺失、时间/输出选项及路径变化后禁用创建，未见pageerror。已确认生产工作台空闲后安全加载，8768入口及模式能力核对通过。
+
+
+## 新电脑交接与裁切入口补充 · 2026-11-05
+
+- AI生成续接显式指定 semantic，避免上传入口默认 duration 忽略画面要求；既有批次不改模式、不重新生成。
+- 审核表单改为可添加/删除多组起止秒数，加载已有区间，越界时阻止提交。留空只允许整段，批量通过不开放裁切，仍需实际内容确认。
+- 新增 check-workbench.cmd / python -m workbench.preflight：离线只读检查，不构造Workbench、不触发任务、不调用模型。核对基本工具、配置、本地ASR及数据库中的素材路径；不输出凭据。数据库连接显式关闭。
+- HANDOFF.md说明独立安装、私密数据迁移、绝对路径限制和实机验收；统一配对入口与两种匹配模式说明。目前没有全业务路径自动重绑向导。
+
+验证：test_generation、test_editing、test_pairing共25项通过；test_preflight新增3项通过（全新目录不创建数据、运行任务数据库不改写、不输出无关秘密、配置异常可报告）。node test_editing_ui.cjs、JavaScript语法、Python编译及git diff --check通过。
+
+Browser plugin not available，使用已安装Playwright/Chrome；http://127.0.0.1:8879 使用浏览器路由隔离的模拟API与真实前端资源，未操作生产任务。桌面1365×900、窄屏390×844：页面身份/非空/无错误覆盖层通过，console/pageerror为空；已有区间显示、添加、删除、越界不提交、确认后精确保存全部通过，窄屏无横向溢出。截图qa-trim-desktop.png和qa-trim-mobile.png保留在本地忽略目录.workbench-data中。
+
+生产状态检查发现仍有识别任务running及queued，因此没有重启后端。前端刷新可用新表单；生成续接修正须在全部任务空闲且确认工作台子进程无活动请求后加载。未在另一台干净电脑实测，也未调用真实模型/付费生成配音服务；不把离线通过视为内容人工审核。

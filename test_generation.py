@@ -42,6 +42,7 @@ class GenerationTest(unittest.TestCase):
             self.assertEqual(tts.call_count,1);self.assertEqual(tts.call_args.kwargs['api_key_value'],'test-secret')
         g=self.get(g);self.assertEqual(g['status'],'editing_ready',g.get('error'))
         batch=self.app.editing.batch(self.p['id'],self.w['id'],g['editing_batch_id']);task=self.app.editing.tasks(self.w['id'],batch['id'])[0]
+        self.assertEqual(batch['rules']['matching_mode'],'semantic')
         self.assertEqual(task['status'],'queued');self.assertEqual(task['script'],'Show red toy.')
         with patch('vision_api.call',return_value=self.proposal()),patch('montage.transcribe',side_effect=AssertionError('do not transcribe generated TTS')):
             self.app.editing.run(self.p['id'],self.w['id'],batch['id'],[task['id']],'plan',True)
