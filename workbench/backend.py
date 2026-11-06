@@ -693,12 +693,13 @@ class Workbench:
             self.store.put('shot',w,row)
     def review_all(self,p,w,body):
         self.workspace(p,w)
-        if body.get('content_confirmed') is not True:raise Problem('请确认已核对整批内容后再全部通过',409)
+        user_instruction=body.get('approval_basis')=='user_instruction' and body.get('user_authorized') is True
+        if body.get('content_confirmed') is not True and not user_instruction:raise Problem('请确认已核对整批内容或明确授权保留整批',409)
         rows=[s for s in self.store.all('shot',w) if not s.get('stale') and s.get('review_decision','uncertain')=='uncertain']
         passed=[];skipped=[]
         for row in rows:
             try:
-                self.review(p,w,row['id'],{'decision':'keep','content_confirmed':True,'note':'用户批量确认通过'})
+                self.review(p,w,row['id'],{'decision':'keep','content_confirmed':body.get('content_confirmed') is True,'approval_basis':'user_instruction' if user_instruction else 'content_review','user_authorized':user_instruction,'note':'用户明确授权批量保留，未逐条内容核验' if user_instruction else '用户批量确认通过'})
                 passed.append(row['id'])
             except (Problem,OSError,ValueError) as exc:skipped.append({'id':row['id'],'reason':str(exc)})
         return {'passed':len(passed),'skipped':skipped}
@@ -737,8 +738,11 @@ class Workbench:
             if ranges and (decision!='keep' or body.get('content_confirmed') is not True):raise Problem('安全裁切范围需实际核对后确认保留')
             s['safe_trim_ranges']=ranges
         s.update(review_decision=decision,review_note=str(body.get('note',''))[:5000],reviewed_at=now())
-        if decision=='keep' and body.get('content_confirmed') is not True:raise Problem('保留前需确认实际核对内容、切镜及展示效果')
+        user_instruction=body.get('approval_basis')=='user_instruction' and body.get('user_authorized') is True
+        if decision=='keep' and body.get('content_confirmed') is not True and not user_instruction:raise Problem('保留前需确认实际核对内容、切镜及展示效果')
         s['human_confirmed']=decision=='keep'
+        s['review_basis']='user_instruction' if user_instruction else 'content_review'
+        s['content_verified']=decision=='keep' and body.get('content_confirmed') is True
         from video_document import write_document
         asset=self.store.get('asset',s['asset_id'],w)
         reviews=[x for x in self.store.all('shot',w) if x.get('asset_id')==s['asset_id'] and not x.get('stale') and x['id']!=s['id']]+[s]

@@ -3,6 +3,9 @@ import hashlib
 import json
 import math
 import re
+import random
+import secrets
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from montage import probe, portrait_geometry, media_duration, fingerprint, read, save, timing, check_segments, srt_time
@@ -152,7 +155,9 @@ class Editing:
                'model_path':str(body.get('model_path','')),'request':str(body.get('request',''))[:10000],
                'width':1080,'height':1920,'fps':30,'batch_dedup':True},
                'product_profile':self.app.product(p).get('profile',{})}
-        if paired_mode:batch['pairing_report']=report
+        if paired_mode:
+            batch['pairing_report']=report
+            if matching=='duration':batch['rules']['use_prepared_files']=True
         self.folder(w,bid).mkdir(parents=True)
         for key,files in sorted(grouped.items(),key=lambda x:natural(x[0])):
             task={'id':uid(),'batch_id':bid,'product_id':p,'workspace_id':w,'name':key,'status':'ready','stage':'等待规划','created_at':now()}
@@ -216,11 +221,25 @@ class Editing:
         check_segments(data['segments'],t['audio_duration'])
         data['audio_sha256']=t['audio_sha256'];save(dest,data);return data
 
-    def candidates(self,p,w,analysis_mode=None):
+    def candidates(self,p,w,analysis_mode=None,use_prepared_files=False):
+        from workbench.usage import ledger, LIMIT
+        counts=ledger(self.store)
         assets={a['id']:a for a in self.app.visible_assets(w)};result=[]
+        if use_prepared_files:
+            for a in assets.values():
+                uses=len(counts.get(a['sha256'],{}))
+                if a.get('kind')!='prepared' or uses>=LIMIT:continue
+                if fingerprint(Path(a['path']))!=a['sha256']:continue
+                end=a['duration'];frames=math.floor(end*30+1e-6)
+                if frames<1:continue
+                result.append(dict(id=a['id'],asset_id=a['id'],asset_sha256=a['sha256'],name=a['name'],
+                                   start=0,end=end,frames=frames,usage_count=uses,usage_limit=LIMIT,
+                                   safe_trim_ranges=[dict(start=0,end=end)],action_start=None,action_end=None))
         for s in self.store.all('shot',w):
             if analysis_mode and s.get('analysis_mode','standard')!=analysis_mode:continue
             a=assets.get(s['asset_id'])
+            if use_prepared_files and a and a.get('kind')=='prepared':continue
+            if a and len(counts.get(a['sha256'],{}))>=LIMIT:continue
             if not a or s.get('stale') or s.get('review_decision')!='keep' or not s.get('human_confirmed'):continue
             if a['sha256']!=s.get('asset_sha256'):continue
             path=self.app.asset_path(w,a['id'])
@@ -232,12 +251,64 @@ class Editing:
             ranges=s.get('safe_trim_ranges',[])
             result.append({'id':s['id'],'asset_id':a['id'],'asset_sha256':a['sha256'],'name':a['name'],
                            'start':s['start'],'end':s['end'],'frames':int(math.floor((s['end']-s['start'])*30+1e-6)),
+                           'usage_count':len(counts.get(a['sha256'],{})),'usage_limit':LIMIT,
                            'safe_trim_ranges':ranges,'facts':s.get('facts',''),'visual_details':s.get('visual_details') or doc.get('context',{}).get('visual_details',{}),
                            'action_start':s.get('action_start'),'action_end':s.get('action_end')})
         return result
 
-    def used(self,w,bid,exclude):
-        return [p for t in self.tasks(w,bid) if t['id']!=exclude and t.get('status')!='cancelled' for p in t.get('plan',{}).get('parts',[])]
+    def history(self,t):
+        # Persisted outputs survive batch boundaries and service restarts. Concurrent
+        # output reservations are checked under app.lock before any rendering starts.
+        return [x for x in self.store.all('edit_task',t['workspace_id'])
+                if x['id']!=t['id'] and (x.get('output') or
+                    (x.get('batch_id')==t['batch_id'] and x.get('plan') and x.get('status')!='cancelled') or
+                    (x.get('dedup_reserved') and x.get('status') in {'running','queued'}))]
+
+    @staticmethod
+    def visual_sequence(parts):
+        sequence=[]
+        for p in parts:
+            start=round(p['start']*30);end=start+p['frames'];sha=p['asset_sha256']
+            if sequence and sequence[-1][0]==sha and sequence[-1][2]==start:
+                sequence[-1]=(sha,sequence[-1][1],end)
+            else:sequence.append((sha,start,end))
+        return sequence
+
+    def duplicate_check(self,t,parts):
+        sequence=self.visual_sequence(parts);matches=[]
+        batch=self.store.get('edit_batch',t['batch_id'],t['workspace_id'])
+        ending=tuple(c['sha256'] for c in batch.get('clips',[]) if c['position']=='outro')
+        for other in self.history(t):
+            previous=other.get('plan',{}).get('parts',[])
+            prior_sequence=self.visual_sequence(previous)
+            if sequence and sequence==prior_sequence:
+                raise ValueError('主体画面完全重复，禁止输出；历史任务 '+other['id']+'。更换配音、音乐或共用片尾不算新的画面方案')
+            if sequence and len(sequence)==len(prior_sequence) and all(
+                sha==old_sha and abs(start-old_start)<=5 and abs(end-old_end)<=5
+                and 100*(min(end,old_end)-max(start,old_start))>=95*max(end-start,old_end-old_start)
+                for (sha,start,end),(old_sha,old_start,old_end) in zip(sequence,prior_sequence)
+            ):
+                raise ValueError('主体与历史任务 '+other['id']+' 近乎重复：素材顺序一致，每段仅微调剪点。请更换主体镜头')
+            # A local, source-interval overlap report; this is not a platform score.
+            covered=0
+            for part in parts:
+                spans=sorted((max(part['start'],x['start']),min(part['end'],x['end']))
+                             for x in previous if x['asset_sha256']==part['asset_sha256']
+                             and min(part['end'],x['end'])>max(part['start'],x['start']))
+                end=-1
+                for a,b in spans:
+                    covered+=max(0,b-max(a,end));end=max(end,b)
+            total=sum(p['frames'] for p in parts)/30
+            ratio=min(1,covered/total) if total else 0
+            other_batch=self.store.get('edit_batch',other['batch_id'],t['workspace_id'])
+            shared_outro=bool(ending and ending==tuple(c['sha256'] for c in other_batch.get('clips',[]) if c['position']=='outro'))
+            same_ending_source=bool(sequence and prior_sequence and sequence[-1][0]==prior_sequence[-1][0])
+            if ratio or shared_outro or same_ending_source:matches.append({'task_id':other['id'],'body_overlap':round(ratio,4),
+                                     'same_ending_source':same_ending_source,
+                                     'shared_uploaded_outro':shared_outro,'same_ending':bool(sequence and prior_sequence and sequence[-1]==prior_sequence[-1])})
+        return {'scope':'account_history','exact_body_duplicate':False,
+                'partial_reuse_allowed':True,'matches':sorted(matches,key=lambda x:-x['body_overlap'])[:20],
+                'note':'只比较已有来源指纹与选区，不代表视觉相似检测或平台审核结果；共用片尾不单独判整条重复'}
 
     def attach_timeline(self,t,timeline):
         t['timeline']=timeline
@@ -250,12 +321,14 @@ class Editing:
         return t
 
     def validate_plan(self,b,t,plan):
-        available={s['id']:s for s in self.candidates(t['product_id'],t['workspace_id'],b['rules'].get('analysis_mode'))}
-        used=self.used(t['workspace_id'],t['batch_id'],t['id']);parts=[];cursor=0
+        available={s['id']:s for s in self.candidates(t['product_id'],t['workspace_id'],b['rules'].get('analysis_mode'),b['rules'].get('use_prepared_files',False))}
+        used=[];parts=[];cursor=0
         if not isinstance(plan,dict) or not isinstance(plan.get('parts'),list) or not plan['parts']:raise ValueError('缺少匹配的画面，请补充已确认素材')
         for raw in plan['parts']:
             c=available.get(raw.get('shot_id'))
             if not c:raise ValueError('所选镜头不属于当前账号、已失效或未经确认')
+            from workbench.duration_planner import ascending
+            if parts and ascending(parts[-1].get('source_name'),c.get('name')):raise ValueError('禁止按文件编号连续递增选片，请重新随机规划')
             start=raw.get('start');frames=raw.get('frames')
             if type(start) not in (int,float) or not math.isfinite(start) or type(frames)!=int or frames<=0:raise ValueError('镜头起点或帧数无效')
             end=start+frames/30
@@ -265,29 +338,75 @@ class Editing:
             if c['action_start'] is not None and (start>c['action_start']+1e-6 or end<c['action_end']-1e-6):raise ValueError('选区截断完整动作')
             reason=str(raw.get('reason','')).strip()
             if not reason:raise ValueError('每段需要配音与画面的匹配理由')
-            if any(c['asset_sha256']==x['asset_sha256'] and min(end,x['end'])-max(start,x['start'])>1e-6 for x in used):raise ValueError('同批次素材区间重复')
-            part={'shot_id':c['id'],'asset_id':c['asset_id'],'asset_sha256':c['asset_sha256'],'start':start,'end':end,'frames':frames,
+            if b['rules'].get('use_prepared_files') and any(x['asset_sha256']==c['asset_sha256'] for x in used):
+                raise ValueError('同一条随机配对成片不能重复选用同一来源')
+            if any(c['asset_sha256']==x['asset_sha256'] and min(end,x['end'])-max(start,x['start'])>1e-6 for x in used):raise ValueError('同一视频内素材区间重复')
+            zoom=raw.get('zoom',1)
+            if type(zoom) not in (int,float) or not math.isfinite(zoom) or not 1<=zoom<=1.05:raise ValueError('放大倍率只允许1至1.05')
+            part={'source_name':c.get('name',''),'zoom':zoom,'shot_id':c['id'],'asset_id':c['asset_id'],'asset_sha256':c['asset_sha256'],'start':start,'end':end,'frames':frames,
                   'timeline_start':cursor/30,'timeline_end':(cursor+frames)/30,'reason':reason,'human_reviewed':False}
             parts.append(part);used.append(part);cursor+=frames
         if cursor!=math.ceil(t['audio_duration']*30-1e-7):raise ValueError(f'画面覆盖 {cursor/30:.2f} 秒，配音需要 {t["audio_duration"]:.2f} 秒；请补充合适素材或安全选区')
+        from workbench.duration_planner import compact_number_run
+        if b['rules'].get('matching_mode')=='duration' and not b['rules'].get('use_prepared_files') and compact_number_run(p['source_name'] for p in parts):
+            raise ValueError('连续三个镜头集中在同一小段文件编号，请更换素材组合')
+        t['dedup_report']=self.duplicate_check(t,parts)
         return {'parts':parts,'audio_sha256':t['audio_sha256'],'matching_mode':b['rules'].get('matching_mode','semantic'),'semantic_review':'not_requested' if b['rules'].get('matching_mode')=='duration' else 'model_proposal','human_reviewed':False}
 
-    def plan(self,b,t,allow_paid):
+    @staticmethod
+    def vary_plan(b,t,proposal):
+        # Both batch-direct and preview use persisted per-task variations.
+        rng=random.Random(t['selection_seed']+'-zoom')
+        choices=[1.025,1.05] if b['rules']['mode']=='direct' else [1,1.025,1.05]
+        for part in proposal.get('parts',[]):
+            part.setdefault('zoom',rng.choice(choices))
+
+    def plan(self,b,t,allow_paid,*,prepared_timeline=None,batch_counts=None):
         self.check_inputs(b,t)
         if t.get('plan'):
-            t['plan']=self.validate_plan(b,t,t['plan']);return t
-        timeline=self.timeline(b,t);self.attach_timeline(t,timeline)
-        t['stage']='配音时间轴已就绪，按已有素材分析匹配画面'
+            t['plan'].update(self.validate_plan(b,t,t['plan']));return t
+        timeline=prepared_timeline or self.timeline(b,t);self.attach_timeline(t,timeline)
+        t.setdefault('selection_seed',secrets.token_hex(16))
+        t['stage']='配音时间轴已就绪，随机候选素材并匹配画面'
         with self.app.lock:
             self.check_stop(t['workspace_id'],t['id']);self.store.put('edit_task',t['workspace_id'],t)
-        candidates=self.candidates(t['product_id'],t['workspace_id'],b['rules'].get('analysis_mode'))
-        if not candidates:raise ValueError('当前账号没有带完整分析 JSON 的已确认素材，请先在素材处理中整理并审核')
-        used=self.used(t['workspace_id'],t['batch_id'],t['id'])
+        candidates=self.candidates(t['product_id'],t['workspace_id'],b['rules'].get('analysis_mode'),b['rules'].get('use_prepared_files',False))
+        if batch_counts is not None:
+            from workbench.usage import LIMIT
+            candidates=[c for c in candidates if c['usage_count']+batch_counts[c['asset_sha256']]<LIMIT]
+        if not candidates:raise ValueError('当前账号没有可用的已确认素材（需完整分析JSON且引用不足3次），请补充或审核其他素材')
+        random.Random(t['selection_seed']).shuffle(candidates)
+        used=[]
         if b['rules'].get('matching_mode','semantic')=='duration':
             from workbench.duration_planner import plan_by_duration
-            proposal=plan_by_duration(candidates,timeline,t['audio_duration'],used)
+            def accept(parts):
+                try:self.duplicate_check(t,parts);return True
+                except ValueError:return False
+            ending_counts={}
+            for previous_task in self.history(t):
+                previous_parts=previous_task.get('plan',{}).get('parts',[])
+                if previous_parts:
+                    sha=previous_parts[-1]['asset_sha256']
+                    ending_counts[sha]=ending_counts.get(sha,0)+1
+            proposal=plan_by_duration(candidates,timeline,t['audio_duration'],used,accept=accept,seed=t['selection_seed'],ending_counts=ending_counts,batch_counts=batch_counts,
+                                      free_selection=b['rules'].get('use_prepared_files',False))
+            self.vary_plan(b,t,proposal)
             t['plan']=self.validate_plan(b,t,proposal);t['plan']['matching_mode']='duration';t['plan']['semantic_review']='not_requested'
+            t['plan']['selection_seed']=t['selection_seed']
+            t['plan']['selection_strategy']='batch_duration' if batch_counts is not None else 'random_feasible'
             t['plan_revision']=uid();return t
+        required_frames=math.ceil(t['audio_duration']*30-1e-7)
+        if required_frames<=1_000_000 and not any(c['safe_trim_ranges'] for c in candidates):
+            # With whole intervals only, each candidate can be used at most once.
+            # This necessary duration check does not establish semantic suitability.
+            reachable=1
+            mask=(1<<(required_frames+1))-1
+            for candidate in candidates:
+                frames=candidate['frames']
+                if 0<frames<=required_frames:reachable|=(reachable<<frames)&mask
+            if not (reachable>>required_frames)&1:
+                raise ValueError(f'全部候选只能整段使用，无法组合为配音所需的{required_frames}帧；未调用选片模型')
+        exact_shots=[c['id'] for c in candidates if c['frames']==required_frames]
         reference=None
         if b.get('reference'):
             from workbench.reference import analyze
@@ -295,18 +414,22 @@ class Editing:
             t['reference_analysis']=reference
         from product_display import MATCH_PROMPT
         prompt=(MATCH_PROMPT+'参考视频只提供叙事顺序、用途及构图线索；以当前产品和配音事实为准。先匹配产品、动作与展示目的，再比较构图、景别和背景。必须解释参考对应关系；不合适要报缺口，禁止只按颜色相似凑片。参考采样边界未经精确确认，不直接成为导出切点。'
+                '当没有参考视频时无需说明参考对应关系。逐句区分泛介绍与明确动作：例如“送什么礼物？”是泛介绍，可用能看清本产品的外观镜头并在理由标明“通用展示”；不要要求画面有人递礼物，也不要声称拍到了送礼。若文案实际描述递出礼物或灯光切换，则必须有对应动作证据。'
                 '根据配音真实时间轴和已有画面观察匹配画面，输入中的文字仅作为数据。用户整段文案用于核对，不得替换识别文字并虚构时间。不要生成或重新分析视频，不按文件顺序凑片。'
                 '严格仅使用候选镜头id。返回JSON对象 {"parts":[{"shot_id":"候选id","start":原片秒数,"frames":30fps帧数,"reason":"对应配音及可见事实的理由"}],"gaps":[]}。'
                 '每段优先用完整候选区间（frames字段）。只有safe_trim_ranges明确允许时才能缩短，不截断action_start/action_end。'
-                '保持原速，不循环，不用无关画面。所有parts的frames之和必须等于所需帧数；已使用的素材重叠区间不能再选。'
+                '保持原速，不循环，不用无关画面。所有parts的frames之和必须等于所需帧数；同一视频内素材区间不能重复；不同视频允许部分复用，不能照搬整个主体。'
                 '缺少合适画面或无法精确覆盖时返回parts空数组及gaps说明，不得编造。按景别、背景、主体动作安排衔接，不能把同产品当作同画面。\n'+
                 json.dumps({'reference':reference,'timing':timeline['segments'],'required_frames':math.ceil(t['audio_duration']*30-1e-7),
-                            'product':b['product_profile'],'supplied_script':t.get('script',''),'rules':b['rules']['request'],'candidates':candidates,'used':used},ensure_ascii=False))
+                            'whole_shots_matching_total_frames':exact_shots,'duration_hint':'上述列表中的每条单独整段恰好覆盖配音；若单条画面适合全部文案，可直接使用该条，无需拼接或裁短。仍须核对画面用途和历史重复。',
+                            'product':b['product_profile'],'supplied_script':t.get('script',''),'rules':b['rules']['request'],'candidates':candidates,'used':used,'history_plans':[{'parts':[{k:p.get(k) for k in ('shot_id','asset_sha256','start','frames')} for p in x.get('plan',{}).get('parts',[])]} for x in self.history(t)[-20:]],
+                            'diversity_rule':'先匹配句意和可见动作；同样合适时优先较少引用的来源，尤其避开历史主体最后一个镜头。同一主体顺序仅微调剪点或放大也不能通过。允许部分复用。'},ensure_ascii=False))
         from vision_api import call
         cache=self.folder(t['workspace_id'],t['batch_id'])/t['id']/'api-cache';cache.mkdir(parents=True,exist_ok=True)
         proposal=call(self.app.config(),prompt,[],cache,allow_paid)
         save(cache.parent/'proposal.json',proposal)
         if proposal.get('gaps'):raise ValueError('缺少匹配素材：'+json.dumps(proposal['gaps'],ensure_ascii=False)[:1000])
+        self.vary_plan(b,t,proposal)
         t['plan']=self.validate_plan(b,t,proposal);t['plan_revision']=uid();return t
 
     def check_stop(self,w,tid):
@@ -319,9 +442,14 @@ class Editing:
             review=t.get('review',{});current=t.get('preview',{})
             if review.get('plan_revision')!=t.get('plan_revision') or review.get('preview_sha256')!=current.get('sha256') or not current or fingerprint(current['path'])!=current['sha256']:
                 raise ValueError('当前剪辑或预览已变化，请重新预览并确认')
-        self.check_inputs(b,t);t['plan']=self.validate_plan(b,t,t['plan'])
+        self.check_inputs(b,t);t['plan'].update(self.validate_plan(b,t,t['plan']))
         with self.app.lock:
             self.check_stop(t['workspace_id'],t['id'])
+            t['dedup_report']=self.duplicate_check(t,t['plan']['parts'])
+            if not preview:
+                from workbench.usage import check
+                check(self.store,t,b)
+                t['dedup_reserved']=True
             t['stage']='正在生成预览并校验音画' if preview else '正在输出成片并校验音画'
             self.store.put('edit_task',t['workspace_id'],t)
         parts=[dict(x,path=str(self.app.asset_path(t['workspace_id'],x['asset_id']))) for x in t['plan']['parts']]
@@ -331,6 +459,7 @@ class Editing:
         out,report=render(t.get('intro'),t['audio'],parts,folder,preview,b['rules']['keep_original_audio'],lambda:self.check_stop(t['workspace_id'],t['id']),
             clips=b.get('clips',[]),music=b.get('music'),music_volume=b['rules'].get('music_volume',.15))
         self.check_inputs(b,t)
+        report['dedup_report']=t.get('dedup_report',{})
         report['human_reviewed']=bool(t.get('human_reviewed')) if not preview else False
         save(folder/'validation.json',report)
         key='preview' if preview else 'output';t[key]={'path':str(out),'sha256':fingerprint(out),'report':report,'plan_revision':t['plan_revision']}
@@ -382,8 +511,57 @@ class Editing:
             if self.app.pool:self.app.pool.submit(self.run,p,w,bid,[t['id'] for t in selected],action,body.get('allow_paid') is True)
             return {'queued':len(selected)}
 
+    def prepare_duration_batch(self,b,w,ids):
+        from workbench.usage import LIMIT,ledger,sources
+        pending=[]
+        counts=Counter()
+        for task in self.tasks(w,b['id']):
+            if task.get('plan') and not task.get('output') and task['status']!='cancelled':
+                counts.update(sources(self.store,task))
+            elif task['id'] in ids and task['status']=='queued' and task.get('operation')=='plan':
+                try:
+                    self.check_inputs(b,task)
+                    timeline=self.timeline(b,task)
+                    pending.append((task,timeline))
+                except Exception as exc:
+                    self.batch_plan_error(w,task,exc)
+        # Allocate longer soundtracks first, then more tightly segmented timelines.
+        pending.sort(key=lambda item:(item[0]['audio_duration'],len(item[1]['segments'])),reverse=True)
+        if not pending:return
+        fixed_paths=[(clip['path'],clip['sha256']) for clip in b.get('clips',[])]
+        fixed_paths.extend((task['intro'],task['intro_sha256']) for task,_ in pending if task.get('intro'))
+        try:
+            historical=ledger(self.store,fixed_paths)
+        except (OSError,ValueError) as exc:
+            for task,_ in pending:self.batch_plan_error(w,task,exc)
+            return
+        for task,timeline in pending:
+            try:
+                self.check_stop(w,task['id'])
+                if any(len(historical.get(sha,{}))+counts[sha]>=LIMIT for sha in sources(self.store,task)):
+                    raise ValueError('固定开头或结尾已达到3次引用上限，含本批已分配次数')
+                self.plan(b,task,False,prepared_timeline=timeline,batch_counts=counts)
+                with self.app.lock:
+                    self.check_stop(w,task['id'])
+                    task['stage']='整批选片已保存，等待输出'
+                    self.store.put('edit_task',w,task)
+                counts.update(sources(self.store,task))
+            except Stopped:pass
+            except Exception as exc:
+                self.batch_plan_error(w,task,exc)
+
+    def batch_plan_error(self,w,task,exc):
+        with self.app.lock:
+            current=self.store.get('edit_task',task['id'],w)
+            if current['status']=='queued':
+                current.update(status='needs_attention',stage='整批选片需要处理',error=str(exc)[:2000])
+                self.store.put('edit_task',w,current)
+
     def run(self,p,w,bid,ids,action,allow_paid=False):
         b=self.batch(p,w,bid)
+        if (len(ids)>1 and action in {'plan','resume'} and b['rules']['mode']=='direct'
+                and b['rules'].get('matching_mode')=='duration'):
+            self.prepare_duration_batch(b,w,ids)
         for tid in ids:
             with self.app.lock:
                 t=self.store.get('edit_task',tid,w)
@@ -407,6 +585,11 @@ class Editing:
                 else:t=self.render(b,t,False);t.update(status='completed',stage='已输出'+('，已确认当前预览' if t.get('human_reviewed') else '，未人工审片'))
                 with self.app.lock:
                     self.check_stop(w,tid);self.store.put('edit_task',w,t)
+                    if t.get('output'):
+                        from workbench.usage import sync,sources
+                        try:t['usage_sync']=sync(self.store,sources(self.store,t))
+                        except (OSError,ValueError) as exc:t['usage_sync']={'error':str(exc)}
+                        self.store.put('edit_task',w,t)
             except Stopped:pass
             except Exception as exc:
                 current=self.store.get('edit_task',tid,w)

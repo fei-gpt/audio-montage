@@ -117,6 +117,141 @@ class EditingTest(unittest.TestCase):
         b=self.create()
         with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')
         tasks=self.app.editing.tasks(self.w['id'],b['id']);self.assertEqual([t['status'] for t in tasks],['planned','needs_attention']);self.assertIn('重复',tasks[1]['error'])
+    def test_cross_batch_exact_body_rejected_but_partial_reuse_allowed(self):
+        b=self.create(mode='direct')
+        with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')
+        self.assertEqual(self.task(b)['status'],'completed')
+        second=self.create();task=self.task(second)
+        with self.assertRaisesRegex(ValueError,'完全重复'):
+            self.app.editing.validate_plan(second,task,self.proposal())
+        # Split the exact same interval into two consecutive parts: still duplicate.
+        split={'parts':[dict(self.proposal()['parts'][0],frames=30),dict(self.proposal()['parts'][0],start=1,frames=30)]}
+        with self.assertRaisesRegex(ValueError,'完全重复'):
+            self.app.editing.validate_plan(second,task,split)
+        # A one-frame shift plus a zoom is still essentially the same edit.
+        shifted={'parts':[dict(self.proposal()['parts'][0],start=1/30,zoom=1.05)]}
+        with self.assertRaisesRegex(ValueError,'近乎重复'):
+            self.app.editing.validate_plan(second,task,shifted)
+        partial={'parts':[dict(self.proposal()['parts'][0],start=1)]}
+        self.app.editing.validate_plan(second,task,partial)
+        peer=dict(task,id='same-batch-peer',plan=self.app.editing.validate_plan(second,task,partial),status='planned')
+        self.app.store.put('edit_task',self.w['id'],peer)
+        # Partial reuse remains allowed within a batch too.
+        self.app.editing.validate_plan(second,task,{'parts':[dict(self.proposal()['parts'][0],start=.5)]})
+        self.assertTrue(any(0<m['body_overlap']<1 for m in task['dedup_report']['matches']))
+        self.assertTrue(task['dedup_report']['partial_reuse_allowed'])
+
+    def test_direct_batch_allocates_before_render_and_reuses_saved_plans(self):
+        shutil.copy2(self.intro,self.inputs/'2.mp4')
+        run(['ffmpeg','-v','error','-f','lavfi','-i','sine=duration=1','-f','wav',self.inputs/'2.mp3'])
+        b=self.create(mode='direct',matching_mode='duration',timing_basis='audio_duration')
+        engine=self.app.editing
+        original=engine.candidates(self.p['id'],self.w['id'])
+        # A second logical source isolates the allocation decision. The first
+        # render is intercepted so resume can be exercised before any output.
+        alternative=dict(original[0],id='alternate',asset_sha256='alternate')
+        snapshots=[]
+        def interrupt(*args):
+            snapshots.append(engine.tasks(self.w['id'],b['id']))
+            raise ValueError('simulated encoder failure')
+        with patch.object(engine,'candidates',return_value=original+[alternative]),patch.object(engine,'render',side_effect=interrupt),patch('vision_api.call',side_effect=AssertionError('unexpected model call')):
+            self.op(b,'plan')
+            plans=[t['plan'] for t in snapshots[0]]
+            self.assertEqual([p['selection_strategy'] for p in plans],['batch_duration']*2)
+            self.assertEqual([sum(s['frames'] for s in p['parts']) for p in plans],[60,30])
+            self.assertNotEqual(plans[0]['parts'][0]['asset_sha256'],plans[1]['parts'][0]['asset_sha256'])
+            with patch('workbench.duration_planner.plan_by_duration',side_effect=AssertionError('replanned')):
+                self.op(b,'resume')
+            self.assertEqual(len(snapshots),4)
+            self.assertEqual([t['plan'] for t in snapshots[-1]],plans)
+
+    def test_direct_batch_renders_three_and_isolates_exhausted_intro(self):
+        for number,duration in [(2,1.5),(3,1),(4,.5)]:
+            shutil.copy2(self.intro,self.inputs/f'{number}.mp4')
+            run(['ffmpeg','-v','error','-f','lavfi','-i',f'sine=duration={duration}','-f','wav',self.inputs/f'{number}.mp3'])
+        b=self.create(mode='direct',matching_mode='duration',timing_basis='audio_duration')
+        with patch('vision_api.call',side_effect=AssertionError('unexpected model call')):
+            self.op(b,'plan')
+        tasks=self.app.editing.tasks(self.w['id'],b['id'])
+        self.assertEqual([t['status'] for t in tasks],['completed']*3+['needs_attention'],[t.get('error') for t in tasks])
+        for t in tasks[:3]:
+            self.assertTrue(Path(t['output']['path']).is_file())
+        self.assertIn('固定开头或结尾',tasks[3]['error'])
+
+    def test_duration_search_skips_historical_duplicate_without_model(self):
+        b=self.create(mode='direct')
+        with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')
+        second=self.create(matching_mode='duration');task=self.task(second)
+        other=dict(self.shot,id='alternative-shot',asset_sha256='different-source',start=0,end=2,frames=60,safe_trim_ranges=[],action_start=None,action_end=None)
+        original=self.app.editing.candidates(self.p['id'],self.w['id'])
+        with patch.object(self.app.editing,'candidates',return_value=original+[other]),patch('vision_api.call',side_effect=AssertionError('no model')):
+            planned=self.app.editing.plan(second,task,False)
+        self.assertNotEqual(self.app.editing.visual_sequence(planned['plan']['parts']),self.app.editing.visual_sequence(self.task(b)['plan']['parts']))
+
+    def test_semantic_whole_only_duration_gap_is_local(self):
+        self.shot['safe_trim_ranges']=[]
+        self.app.store.put('shot',self.w['id'],self.shot)
+        batch=self.create(matching_mode='semantic')
+        with patch('vision_api.call') as call:
+            self.op(batch,'plan')
+            call.assert_not_called()
+        task=self.task(batch)
+        self.assertEqual(task['status'],'needs_attention')
+        self.assertIn('60帧',task['error'])
+
+    def test_output_reservation_blocks_duplicate_before_encoder(self):
+        first=self.create();task=self.task(first)
+        task['plan']=self.app.editing.validate_plan(first,task,self.proposal())
+        task.update(status='running',dedup_reserved=True)
+        self.app.store.put('edit_task',self.w['id'],task)
+        second=self.create();other=self.task(second)
+        with self.assertRaisesRegex(ValueError,'完全重复'):
+            self.app.editing.validate_plan(second,other,self.proposal())
+        task['status']='needs_attention';self.app.store.put('edit_task',self.w['id'],task)
+        self.app.editing.validate_plan(second,other,self.proposal())
+
+    def test_common_outro_reported_without_blocking_different_bodies(self):
+        first=self.create();task=self.task(first)
+        first['clips']=[{'position':'outro','sha256':'shared-outro'}]
+        self.app.store.put('edit_batch',self.w['id'],first)
+        task.update(output={'sha256':'old-output'},plan={'parts':[{'asset_sha256':'source-a','start':0,'end':2,'frames':60}]})
+        self.app.store.put('edit_task',self.w['id'],task)
+        second=self.create();second['clips']=first['clips'];self.app.store.put('edit_batch',self.w['id'],second)
+        other=self.task(second)
+        report=self.app.editing.duplicate_check(other,[{'asset_sha256':'source-b','start':0,'end':2,'frames':60}])
+        self.assertTrue(report['matches'][0]['shared_uploaded_outro'])
+        self.assertEqual(report['matches'][0]['body_overlap'],0)
+        # Same source with a disjoint ending is a source reuse hint, not
+        # an identical ending or an identical body.
+        different_cut=self.app.editing.duplicate_check(other,[{'asset_sha256':'source-a','start':2,'end':4,'frames':60}])
+        match=different_cut['matches'][0]
+        self.assertTrue(match['same_ending_source'])
+        self.assertFalse(match['same_ending'])
+        self.assertEqual(match['body_overlap'],0)
+
+    def test_zoom_preview_and_output_preserve_portrait_and_duration(self):
+        b=self.create();proposal=self.proposal();proposal['parts'][0]['zoom']=1.05
+        with patch('vision_api.call',return_value=proposal):self.op(b,'plan')
+        self.op(b,'preview');t=self.task(b)
+        self.assertEqual(t['status'],'awaiting_review',t.get('error'))
+        self.assertEqual(t['plan']['parts'][0]['zoom'],1.05)
+        self.op(b,'output',{'content_confirmed':True,'preview_sha256':t['preview']['sha256']})
+        t=self.task(b);self.assertEqual(t['status'],'completed',t.get('error'))
+        self.assertEqual(t['output']['report']['duration'],3)
+
+    def test_direct_batch_random_zoom_renders_without_model_or_fake_review(self):
+        b=self.create(mode='direct',matching_mode='duration')
+        with patch('vision_api.call',side_effect=AssertionError('no model')):
+            self.op(b,'plan')
+        t=self.task(b)
+        self.assertEqual(t['status'],'completed',t.get('error'))
+        self.assertTrue(all(p['zoom'] in (1.025,1.05) for p in t['plan']['parts']))
+        self.assertFalse(t.get('human_reviewed',False))
+        self.assertEqual(t['output']['report']['duration'],3)
+        original=json.loads(json.dumps(t['plan']))
+        self.app.editing.vary_plan(b,t,t['plan'])
+        self.assertEqual(t['plan'],original)
+
     def test_timing_cache_and_plan_resume_no_api(self):
         b=self.create()
         with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')

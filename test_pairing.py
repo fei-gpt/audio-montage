@@ -39,7 +39,7 @@ class PairBatchTest(unittest.TestCase):
         self.assertEqual(self.app.editing.list(self.p['id'],self.w['id']),[])
     def test_total_duration_preview_and_output_without_asr_or_model(self):
         body=self.body();body['mode']='direct';b=self.app.editing.create(self.p['id'],self.w['id'],body)
-        with patch('vision_api.call',side_effect=AssertionError('no model')),patch('workbench.local_asr.transcribe',side_effect=AssertionError('no ASR')):
+        with patch('workbench.editing.load_document',side_effect=AssertionError('prepared files need no analysis')),patch('vision_api.call',side_effect=AssertionError('no model')),patch('workbench.local_asr.transcribe',side_effect=AssertionError('no ASR')):
             self.op(b,'plan')
         t=self.task(b);self.assertEqual(t['status'],'completed',t.get('error'));self.assertEqual(t['timeline']['source'],'audio_duration')
         self.assertEqual(t['output']['report']['intro_seconds'],1);self.assertEqual(t['output']['report']['body_seconds'],2)
