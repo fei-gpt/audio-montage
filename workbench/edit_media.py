@@ -40,9 +40,20 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
             sequence.append({'path':path,'start':0,'frames':frames,'role':role})
     sequence=[p for p in sequence if p['role']=='intro']+[dict(p,role='body') for p in parts]+[p for p in sequence if p['role']=='outro']
     expected=(head_frames+body_frames+tail_frames)/30
-    paths=[Path(audio)]+[Path(p['path']) for p in sequence]+([Path(music['path'])] if music else [])
+    paths=[Path(audio)]+[Path(p['path']) for p in sequence if 'path' in p]+([Path(music['path'])] if music else [])
     hashes={str(p):fingerprint(p) for p in paths};videos=[];sounds=[];bookend_audio=False
     for i,part in enumerate(sequence):
+        if 'reference_gap' in part:
+            if not preview:raise ValueError('参考时间轴仍有空缺，不能正式输出')
+            check_cancel()
+            out=folder/f'clip-{i:04}.mp4';sound=folder/f'sound-{i:04}.wav'
+            frames=part['frames'];beat=int(part['reference_gap'])
+            card=f"drawtext=text='SHOT {beat}  /  FOOTAGE NEEDED':fontcolor=white:fontsize=19:x=(w-tw)/2:y=(h-th)/2"
+            run(['ffmpeg','-v','error','-nostdin','-n','-f','lavfi','-i',f'color=c=0x202630:s={width}x{height}:r=30',
+                 '-vf',card,'-frames:v',frames,'-an','-c:v','libx264','-preset','fast','-pix_fmt','yuv420p',out])
+            run(['ffmpeg','-v','error','-nostdin','-n','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t',frames/30,sound])
+            videos.append(out);sounds.append(sound)
+            continue
         check_cancel();path=part['path'];start=part['start'];frames=part['frames'];pi=probe(path);portrait_geometry(pi)
         if start+frames/30>media_duration(pi,'video')+1/30+1e-6:raise ValueError('视频长度不足，不能循环或定格补齐')
         out=folder/f'clip-{i:04}.mp4';videos.append(out)

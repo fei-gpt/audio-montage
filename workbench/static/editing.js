@@ -96,7 +96,7 @@ function editTaskDialog(id){
   ${referenceMatchPanel(b,t,busy||off)}
   ${t.reference_analysis?`<details><summary>参考视频结构（采样初审，非精确切点）</summary>${t.reference_analysis.beats.map(x=>`<p>${x.start}–${x.end}秒 · ${esc(x.purpose)} · ${esc(x.action)} · ${esc(x.composition)}</p>`).join('')}</details>`:''}${t.plan?`<details><summary>剪辑清单（${t.plan.parts.length}段）</summary>${t.plan.parts.map(p=>`<p class="small">${p.timeline_start.toFixed(2)}–${p.timeline_end.toFixed(2)} · ${esc(p.reason)}</p>`).join('')}<label class="field"><span>修正清单 JSON（只能使用已确认镜头与安全区间）</span><textarea id="editPlanJson" style="min-height:180px">${esc(JSON.stringify(t.plan,null,2))}</textarea></label><button id="editSavePlan" ${busy||off?'disabled':''}>保存修改并重新预览</button></details>`:''}
   <div class="inline" style="margin-top:16px"><button data-edit-op="${['ready','timing_ready'].includes(t.status)?'plan':'resume'}" ${busy||off?'disabled':''}>${t.plan?'继续任务':'规划选片'}</button><button data-edit-op="preview" ${!t.plan||busy||off?'disabled':''}>生成预览</button><button data-edit-op="pause" ${off?'disabled':''}>暂停</button><button data-edit-op="cancel" ${off?'disabled':''}>取消</button></div>
-  ${t.plan&&!off?`<div style="margin-top:16px">${b.rules.mode==='preview'?'<label class="check-label"><input id="editReviewed" type="checkbox">已实际核对当前预览的内容、完整动作、配音时间轴和音画衔接</label>':''}<button class="primary" id="editFinal" ${busy||b.rules.mode==='preview'&&!t.preview?'disabled':''}>${b.rules.mode==='direct'?'直接输出（未人工审片）':'确认并输出'}</button></div>`:''}</div>`);
+  ${t.plan&&!off?`<div style="margin-top:16px">${b.rules.mode==='preview'?'<label class="check-label"><input id="editReviewed" type="checkbox">已实际核对当前预览的内容、完整动作、配音时间轴和音画衔接</label>':''}<button class="primary" id="editFinal" ${busy||t.plan.reference_gaps?.length||b.rules.mode==='preview'&&!t.preview?'disabled':''}>${b.rules.mode==='direct'?'直接输出（未人工审片）':'确认并输出'}</button></div>`:''}</div>`);
   document.querySelectorAll('[data-edit-op]').forEach(button=>button.onclick=()=>editOperation(button.dataset.editOp,id));
   bindReferenceMatchPanel(b,t,busy||off);
   $('#editSavePlan')?.addEventListener('click',()=>{try{editOperation('save-plan',id,{plan:JSON.parse($('#editPlanJson').value),plan_revision:t.plan_revision})}catch(e){toast('JSON 格式错误：'+e.message)}});
@@ -121,7 +121,8 @@ function referenceMatchPanel(batch, task, locked) {
   }).join('');
   if (!rows) return '';
   return `<section><h3>参考分镜与实拍对照</h3>
-    ${omitted.length?`<p class="warning">本次未采用的参考分镜：${omitted.join('、')}</p>`:''}
+    ${task.plan.reference_gaps?.length?`<p class="warning">待补区间（预览保留原时长，补齐后可输出）</p>${task.plan.reference_gaps.map(g=>`<p class="small">第 ${g.beat} 段 · ${(g.start_frame/30).toFixed(2)}–${((g.start_frame+g.frames)/30).toFixed(2)} 秒 · ${esc(g.reason)}</p>`).join('')}`:''}
+    ${omitted.length&&!task.plan.reference_gaps?`<p class="warning">本次未采用的参考分镜：${omitted.join('、')}</p>`:''}
     ${(Array.isArray(task.reference_notes)?task.reference_notes:[]).map(n=>`<p class="small">${esc(typeof n==='string'?n:n.reason)}</p>`).join('')}
     ${task.reference_screen?`<p class="small">全库初筛排除 ${task.reference_screen.excluded.length} 个区间。入选与备选的拼图复核另排除 ${Object.values(task.reference_verdicts||{}).filter(v=>v.verdict!=='different_shoot').length} 个存疑选区。</p>`:''}${rows}</section>`;
 }

@@ -90,6 +90,8 @@ class EditingTest(unittest.TestCase):
         ref=self.upload(self.intro,'reference')
         w=self.w['id'];p=self.p['id'];eng=self.app.editing
         b=eng.create_uploaded(p,w,dict(reference_id=ref['id'],matching_mode='semantic',mode='preview',rights_allowed=True))
+        b['rules'].pop('reference_evidence')  # A saved batch from before the fixed reference clock.
+        self.app.store.put('edit_batch',w,b)
         beat=dict(start=0,end=1,purpose='展示',subject='产品',action='旋转',composition='近景')
         path=self.library/'alternative.mp4'
         run(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=s=180x320:r=30:d=2','-c:v','libx264',path])
@@ -111,6 +113,34 @@ class EditingTest(unittest.TestCase):
             with self.assertRaises(Problem):eng.action(p,w,b['id'],'replace-shot',body)
             self.op(b,'preview');self.assertEqual(self.task(b)['preview']['report']['body_seconds'],2)
         with self.assertRaises(Problem):eng.media(p,self.w2['id'],t['id']+'-2')
+
+    def test_reference_clock_keeps_three_frame_intro_and_missing_tail(self):
+        from workbench.reference import span_key
+        eng=self.app.editing
+        w,p=self.w['id'],self.p['id']
+        ref=self.upload(self.intro,'reference')
+        b=eng.create_uploaded(p,w,dict(reference_id=ref['id'],matching_mode='semantic',mode='preview',rights_allowed=True))
+        beat=dict(purpose='展示',action='旋转',subject='产品',composition='近景')
+        beats=[dict(beat,start=0,end=.1),dict(beat,start=.1,end=1)]
+        proposal={'parts':[{'reference_beat':1,'shot_id':'unlisted','reason':'bad',
+                            'alternatives':[{'shot_id':self.shot['id'],'reason':'清楚的产品封面'}]}],
+                  'gaps':[{'reference_beat':2,'reason':'缺少独立实拍'}]}
+        def audit(app,b,rows,paid,stop):
+            return {span_key(x):{'verdict':'different_shoot'} for row in rows for x in row}
+        with patch('workbench.reference_structure.analyze',return_value={'beats':beats}), patch('vision_api.call',return_value=proposal), patch('workbench.reference.audit_choices',side_effect=audit), patch('workbench.reference.screen_sources',side_effect=lambda app,b,c:(c,[])):
+            self.op(b,'plan')
+            t=self.task(b)
+            self.assertEqual(t['status'],'planned',t.get('error'))
+            self.assertEqual(t['plan']['parts'][0]['frames'],3)
+            gap=t['plan']['reference_gaps'][0]
+            self.assertEqual((gap['start_frame'],gap['frames']),(3,27))
+            self.op(b,'preview')
+            t=self.task(b)
+            self.assertEqual(t['status'],'awaiting_review',t.get('error'))
+            self.assertEqual(t['preview']['report']['body_seconds'],1)
+            with self.assertRaisesRegex(Problem,'待补实拍'):
+                eng.action(p,w,b['id'],'output',dict(task_ids=[t['id']],content_confirmed=True,preview_sha256=t['preview']['sha256']))
+            self.assertFalse(self.task(b).get('human_reviewed',False))
 
     def test_upload_rejects_invalid_or_incomplete_media(self):
         with self.assertRaises(Problem):self.app.editing.upload(self.p['id'],self.w['id'],'x.exe','clip',io.BytesIO(b'bad'),3)

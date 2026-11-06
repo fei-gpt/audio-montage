@@ -6,6 +6,17 @@ from montage import fingerprint
 from workbench.reference import analyze
 
 class ReferenceTests(unittest.TestCase):
+    def test_reference_cut_aligns_to_third_frame_without_moving_the_end(self):
+        from montage import save
+        from workbench.reference_structure import align_to_picture
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            save(root/'boundaries.json',{'candidates':[{'at':.095,'score':.9}]})
+            raw=bytes(3*24*40)+bytes([130])*(27*24*40)
+            with patch('workbench.reference_structure.subprocess.run',return_value=SimpleNamespace(stdout=raw)):
+                result=align_to_picture({'beats':[dict(start=0,end=.15),dict(start=.15,end=1)]},root/'ref',root)
+            self.assertEqual(result['beats'],[dict(start=0,end=.1),dict(start=.1,end=1)])
+
     def test_shortlist_audit_caches_by_reference_and_exact_cut(self):
         from workbench.reference import audit_choices,span_key
         with tempfile.TemporaryDirectory() as tmp:
