@@ -405,7 +405,7 @@ class Editing:
                 frames=candidate['frames']
                 if 0<frames<=required_frames:reachable|=(reachable<<frames)&mask
             if not (reachable>>required_frames)&1:
-                raise ValueError(f'全部候选只能整段使用，无法组合为配音所需的{required_frames}帧；未调用选片模型')
+                raise ValueError(f'全部候选只能整段使用，无法组合为配音所需的{required_frames}帧；请补充镜头或核对安全裁切范围。未调用选片模型')
         exact_shots=[c['id'] for c in candidates if c['frames']==required_frames]
         reference=None
         if b.get('reference'):
