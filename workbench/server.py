@@ -61,7 +61,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(self.route(method,path,body,urllib.parse.parse_qs(url.query)))
         except Problem as exc:self.json({'error':str(exc)},exc.status)
         except (ValueError,KeyError,TypeError,IndexError) as exc:self.json({'error':'参数或记录无效：'+str(exc)[:500]},400)
-        except BrokenPipeError:pass
+        except (BrokenPipeError,ConnectionAbortedError,ConnectionResetError):pass
         except Exception as exc:self.json({'error':str(exc)[:1200]},500)
     def route(self,method,path,b,q):
         app=self.app;s=app.store
@@ -78,6 +78,8 @@ class Handler(BaseHTTPRequestHandler):
                     for g in w['generations']:
                         if g.get('intro'):g['intro']['media_url']=self.media_url(p['id'],w['id'],'gen',g['id'])
                     for batch in w['editing_batches']:
+                        if batch.get('reference') and batch['tasks']:
+                            batch['reference']['media_url']=self.media_url(p['id'],w['id'],'edit',batch['tasks'][0]['id']+'-2')
                         for task in batch['tasks']:
                             for key,index in [('preview','0'),('output','1')]:
                                 if task.get(key):task[key]['media_url']=self.media_url(p['id'],w['id'],'edit',task['id']+'-'+index)

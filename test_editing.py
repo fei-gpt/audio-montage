@@ -86,6 +86,32 @@ class EditingTest(unittest.TestCase):
         result=self.app.editing.render(b,t,True);report=result['preview']['report']
         self.assertEqual(report['intro_seconds'],1);self.assertEqual(report['outro_seconds'],1);self.assertEqual(report['duration'],4)
         self.assertTrue(report['music_body_only']);self.assertFalse(report['music_looped']);self.assertEqual(report['music_volume'],.15)
+    def test_reference_only_preview_and_local_replacement(self):
+        ref=self.upload(self.intro,'reference')
+        w=self.w['id'];p=self.p['id'];eng=self.app.editing
+        b=eng.create_uploaded(p,w,dict(reference_id=ref['id'],matching_mode='semantic',mode='preview',rights_allowed=True))
+        beat=dict(start=0,end=1,purpose='展示',subject='产品',action='旋转',composition='近景')
+        path=self.library/'alternative.mp4'
+        run(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=s=180x320:r=30:d=2','-c:v','libx264',path])
+        self.app.scan(p,w);asset=next(a for a in self.app.visible_assets(w) if a['name']==path.name)
+        shot=dict(self.shot,id='alt',asset_id=asset['id'],asset_sha256=asset['sha256'],end=2,safe_trim_ranges=[])
+        self.app.store.put('shot',w,shot);write_document(path,asset['sha256'],complete=True,context={})
+        proposal=self.proposal();part=proposal['parts'][0]
+        part.update(reference_beat=1,alternatives=[{'shot_id':'alt','reason':'不同拍摄的近景'}])
+        # Pure-color synthetic sources carry no framing detail; screening has its own media test.
+        from workbench.reference import span_key
+        verdicts=lambda app,b,rows,paid,stop:{span_key(x):{'verdict':'different_shoot'} for row in rows for x in row}
+        with patch('workbench.reference.audit_choices',side_effect=verdicts),patch('workbench.reference.analyze',return_value={'beats':[beat]}),patch('vision_api.call',return_value=proposal),patch('workbench.reference.screen_sources',side_effect=lambda app,b,c:(c,[])):
+            self.op(b,'plan');t=self.task(b);self.assertEqual(t['status'],'planned',t.get('error'))
+            self.op(b,'preview');t=self.task(b);self.assertEqual(t['status'],'awaiting_review',t.get('error'))
+            body=dict(task_ids=[t['id']],index=0,option=1,plan_revision=t['plan_revision'])
+            changed=eng.action(p,w,b['id'],'replace-shot',body)
+            self.assertNotIn('preview',changed);self.assertEqual(changed['plan']['parts'][0]['shot_id'],'alt')
+            self.assertEqual(changed['plan']['parts'][0]['frames'],60)
+            with self.assertRaises(Problem):eng.action(p,w,b['id'],'replace-shot',body)
+            self.op(b,'preview');self.assertEqual(self.task(b)['preview']['report']['body_seconds'],2)
+        with self.assertRaises(Problem):eng.media(p,self.w2['id'],t['id']+'-2')
+
     def test_upload_rejects_invalid_or_incomplete_media(self):
         with self.assertRaises(Problem):self.app.editing.upload(self.p['id'],self.w['id'],'x.exe','clip',io.BytesIO(b'bad'),3)
         with self.assertRaises(Problem):self.app.editing.upload(self.p['id'],self.w['id'],'x.mp3','narration',io.BytesIO(b'bad'),10)
