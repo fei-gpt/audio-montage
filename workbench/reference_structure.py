@@ -36,6 +36,8 @@ def align_to_picture(result, path, folder):
             cuts[peak]=diff[peak]
     beats=[dict(b) for b in result['beats']]
     for left,right in zip(beats,beats[1:]):
+        if 'boundary_kind' in right and right['boundary_kind'] != 'cut':
+            continue
         predicted=right['start']
         near=[i for i in cuts if abs(i/30-predicted)<=.50 and
               left['start']+1/60<i/30<right['end']-1/60]
@@ -86,7 +88,7 @@ def evidence(folder, path, duration):
     return result
 
 
-def analyze(app, workspace, upload, allow_paid, template=None):
+def analyze(app, workspace, upload, allow_paid, template=None, *, timed=False):
     from vision_api import call
     path = Path(upload['path'])
     duration = upload['duration']
@@ -96,6 +98,10 @@ def analyze(app, workspace, upload, allow_paid, template=None):
     if (cfg.get('provider'), cfg.get('model')) != ('codex', 'gpt-6-luna'):
         raise ValueError('参考结构分析需要已登录的 Codex gpt-6-luna')
     folder = app.wroot(workspace)/'reference-evidence'/upload['sha256']/'hypit-structure-v1'
+    if timed:
+        from explicit_recognition import VERSION
+        from asset_index import digest_json
+        folder = folder / VERSION / digest_json(template or {})
     folder.mkdir(parents=True, exist_ok=True)
     result_path = folder/'observations.json'
     if result_path.exists():
@@ -126,9 +132,23 @@ def analyze(app, workspace, upload, allow_paid, template=None):
         # Older attempts used the base prompt. Preserve their request identity on resume.
         if not any((folder/'model-cache').glob('*.attempt.json')):
             prompt+='\n观察部件数量、连接处和双手接触前后状态，区分同一物件转动、改变组合形态和切镜。观察不到分离过程时只记录可见状态。'
+            if timed:
+                prompt+=('\n每段再给出 must_see（表达此用途必须看见的事实）、'
+                         'flexible（允许替换的差异）字符串数组，以及 boundary_kind '
+                         '（start/cut/transition/phase/unknown，描述本段起始处）。'
+                         '在首尾网格之后附上片中机械变化附近带独立原片时码的补充帧。'
+                         '分清持续状态与变化过程，保留未见的触发方式为未知。')
             if template:
                 prompt+='\n已确认的产品观察维度（仅作为观察线索）：'+json.dumps(template,ensure_ascii=False)
         save(request,{'prompt':prompt})
+    if timed and peaks:
+        from explicit_recognition import TimedFrames
+        clock = TimedFrames(path, folder/'timed')
+        extra = {}
+        for peak in [t for t in peaks if .3 < t < duration-.3][:4]:
+            for frame in clock.sample(peak-.15, peak+.15, .1):
+                extra[frame['time']] = frame
+        images.extend(extra[t] for t in sorted(extra))
     result = call(cfg, prompt, images, folder/'model-cache', allow_paid)
     beats = result.get('beats')
     previous = 0
@@ -145,10 +165,20 @@ def analyze(app, workspace, upload, allow_paid, template=None):
         if not all(isinstance(beat.get(k), str) and beat[k].strip()
                    for k in ('purpose','subject','action','composition')):
             raise ValueError('参考分段缺少画面依据')
+        if timed:
+            if beat.get('boundary_kind') not in ('start','cut','transition','phase','unknown'):
+                raise ValueError('参考段缺少物理边界与动作阶段判断')
+            for field in ('must_see','flexible'):
+                items = beat.get(field)
+                if not isinstance(items,list) or any(not isinstance(x,str) or not x.strip() for x in items):
+                    raise ValueError('参考段缺少必要事实或可变条件')
+            if not beat['must_see']:
+                raise ValueError('参考段未说明必须看见的事实')
         previous = end
     if abs(duration-previous) > .001:
         raise ValueError('参考结构未覆盖片尾')
     result.update(source_sha256=upload['sha256'], duration=duration, version='hypit-structure-v1',
                   boundaries_verified=False, audio_transcribed=False)
+    if timed:result['evidence_standard']=VERSION
     save(result_path, result)
     return align_to_picture(result,path,folder)

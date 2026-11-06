@@ -142,6 +142,58 @@ class EditingTest(unittest.TestCase):
                 eng.action(p,w,b['id'],'output',dict(task_ids=[t['id']],content_confirmed=True,preview_sha256=t['preview']['sha256']))
             self.assertFalse(self.task(b).get('human_reviewed',False))
 
+    def test_diagnostics_and_regression_samples_are_versioned_and_scoped(self):
+        from workbench.reference_review import diagnose,record
+        eng=self.app.editing
+        p,w=self.p['id'],self.w['id']
+        ref=self.upload(self.intro,'reference')
+        b=eng.create_uploaded(p,w,dict(reference_id=ref['id'],matching_mode='semantic',mode='preview',rights_allowed=True))
+        t=self.task(b)
+        beat=dict(start=0,end=1,purpose='显示结果',action='亮起',subject='灯',must_see=['从灭到亮'])
+        t['reference_analysis']={'beats':[beat]}
+        self.app.store.put('edit_task',w,t)
+        root=eng.folder(w,b['id'])/t['id']
+        save(root/'reference-stock.json',{'x':{'name':'固定展示','facts':'一直亮着','analysis_version':'old'}})
+        save(root/'api-cache'/'slots-1.json',{'slots':[{'reference_beat':1,'choices':[{'id':'x'}],
+                                                        'excluded':[['z','no_safe_fit']]}]})
+        save(root/'proposal.json',{'gaps':[{'reference_beat':1,'reason':'没有拍到亮起'}]})
+        args=(self.app,p,w,b['id'],t['id'])
+        report=diagnose(*args)
+        row=report['rows'][0]
+        self.assertEqual(row['candidates'][0]['facts'],'一直亮着')
+        self.assertEqual(row['excluded'][0]['reason'],'no_safe_fit')
+        self.assertEqual(row['notes'],['没有拍到亮起'])
+        body=dict(revision=report['revision'],beat=1,stage='recognition',scope='product',expected='须看见从灭到亮')
+        case=record(*args,'samples',body)
+        self.assertEqual(case['id'],record(*args,'samples',body)['id'])
+        self.assertEqual(len(diagnose(*args)['cases']),1)
+        with self.assertRaises(Problem):record(*args,'samples',dict(body,revision='stale'))
+        with self.assertRaises(Problem):diagnose(self.app,p,self.w2['id'],b['id'],t['id'])
+        other=eng.create_uploaded(p,w,dict(reference_id=ref['id'],matching_mode='semantic',mode='preview',rights_allowed=True))
+        newer=self.task(other);newer['reference_analysis']={'beats':[beat]}
+        self.app.store.put('edit_task',w,newer)
+        args2=(self.app,p,w,other['id'],newer['id'])
+        comparison=diagnose(*args2)
+        self.assertEqual(comparison['rows'][0]['cases'],[case['id']])
+        checked=record(*args2,'checks',dict(revision=comparison['revision'],beat=1,case_id=case['id'],outcome='fail'))
+        self.assertEqual(checked['checks'][0]['task_id'],newer['id'])
+        self.assertEqual(checked['evidence']['notes'],['没有拍到亮起'])
+
+    def test_semantic_version_choice_only_applies_to_its_asset_in_its_workspace(self):
+        eng=self.app.editing;p=self.p['id'];w=self.w['id']
+        old=dict(self.shot,analysis_version='A')
+        new=dict(old,id='another-shot',analysis_version='B')
+        for shot in (old,new):self.app.store.put('shot',w,shot)
+        body=dict(sha256=self.asset['sha256'],previous=None,version='B')
+        self.app.select_standard_version(p,w,self.asset['id'],body)
+        picked=eng.candidates(p,w,active_versions=True)
+        self.assertEqual([c['analysis_version'] for c in picked],['B'])
+        self.assertEqual(len(eng.candidates(p,w)),2)
+        with self.assertRaises(Problem):self.app.select_standard_version(p,w,self.asset['id'],dict(body,version='A'))
+        with self.assertRaises(Problem):self.app.select_standard_version(p,self.w2['id'],self.asset['id'],body)
+        self.app.select_standard_version(p,w,self.asset['id'],dict(body,previous='B',version=None))
+        self.assertEqual(len(eng.candidates(p,w,active_versions=True)),2)
+
     def test_upload_rejects_invalid_or_incomplete_media(self):
         with self.assertRaises(Problem):self.app.editing.upload(self.p['id'],self.w['id'],'x.exe','clip',io.BytesIO(b'bad'),3)
         with self.assertRaises(Problem):self.app.editing.upload(self.p['id'],self.w['id'],'x.mp3','narration',io.BytesIO(b'bad'),10)

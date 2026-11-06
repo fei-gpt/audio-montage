@@ -113,6 +113,9 @@ class Editing:
             batch['rules']['reference_matching']=2
             batch['rules']['reference_only']=reference_only
             batch['rules']['reference_evidence']='hypit-structure-v1'
+            if analysis_mode=='standard':
+                from explicit_recognition import VERSION
+                batch['rules']['evidence_standard']=VERSION
             product=self.app.product(p)
             template=product.get('recognition_template') or {}
             from workbench.product_template import signature
@@ -251,7 +254,7 @@ class Editing:
         check_segments(data['segments'],t['audio_duration'])
         data['audio_sha256']=t['audio_sha256'];save(dest,data);return data
 
-    def candidates(self,p,w,analysis_mode=None,use_prepared_files=False,*,reference_clock=False):
+    def candidates(self,p,w,analysis_mode=None,use_prepared_files=False,*,reference_clock=False,active_versions=False):
         from workbench.usage import ledger, LIMIT
         counts=ledger(self.store)
         assets={a['id']:a for a in self.app.visible_assets(w)};result=[]
@@ -272,6 +275,9 @@ class Editing:
             if a and len(counts.get(a['sha256'],{}))>=LIMIT:continue
             if not a or s.get('stale') or s.get('review_decision')!='keep' or not s.get('human_confirmed'):continue
             if a['sha256']!=s.get('asset_sha256'):continue
+            version=s.get('analysis_version') or s.get('job_id') or 'legacy'
+            if (active_versions and s.get('analysis_mode','standard')=='standard'
+                    and a.get('active_standard_version') and a['active_standard_version']!=version):continue
             path=self.app.asset_path(w,a['id'])
             if fingerprint(path)!=a['sha256']:continue
             doc=load_document(path,a['sha256'])
@@ -288,8 +294,11 @@ class Editing:
             result.append({'id':s['id'],'asset_id':a['id'],'asset_sha256':a['sha256'],'name':a['name'],
                            'start':s['start'],'end':s['end'],'frames':int(math.floor((s['end']-s['start'])*30+1e-6)),
                            'usage_count':len(counts.get(a['sha256'],{})),'usage_limit':LIMIT,
-                           'safe_trim_ranges':ranges,'facts':s.get('facts',''),'visual_details':s.get('visual_details') or doc.get('context',{}).get('visual_details',{}),
+                           'safe_trim_ranges':ranges,'facts':s.get('facts',''),'visual_details':s.get('visual_details') or ({} if s.get('temporal_observation') else doc.get('context',{}).get('visual_details',{})),
                            'action_start':s.get('action_start'),'action_end':s.get('action_end')})
+            if s.get('temporal_observation'):
+                result[-1]['temporal_observation']=s['temporal_observation']
+            if active_versions:result[-1]['analysis_version']=version
             if reference_clock:result[-1]['interval_details']=s.get('visual_details',{})
         return result
 
@@ -362,7 +371,7 @@ class Editing:
         if not isinstance(plan,dict) or not isinstance(plan.get('parts'),list) or not plan['parts']:raise ValueError('缺少匹配的画面，请补充已确认素材')
         if any(not isinstance(part,dict) or not isinstance(part.get('shot_id'),str) for part in plan['parts']):raise ValueError('所选镜头格式无效')
         if available is None:
-            candidates=self.candidates(t['product_id'],t['workspace_id'],b['rules'].get('analysis_mode'),b['rules'].get('use_prepared_files',False),reference_clock=strict_clock)
+            candidates=self.candidates(t['product_id'],t['workspace_id'],b['rules'].get('analysis_mode'),b['rules'].get('use_prepared_files',False),reference_clock=strict_clock,active_versions=b['rules'].get('matching_mode','semantic')=='semantic')
             if b['rules'].get('reference_matching')==2:
                 from workbench.reference import screen_sources,span_key
                 requested={part['shot_id'] for part in plan['parts']}
@@ -398,6 +407,7 @@ class Editing:
             if type(zoom) not in (int,float) or not math.isfinite(zoom) or not 1<=zoom<=1.05:raise ValueError('放大倍率只允许1至1.05')
             part={'source_name':c.get('name',''),'zoom':zoom,'shot_id':c['id'],'asset_id':c['asset_id'],'asset_sha256':c['asset_sha256'],'start':start,'end':end,'frames':frames,
                   'timeline_start':cursor/30,'timeline_end':(cursor+frames)/30,'reason':reason,'human_reviewed':False}
+            if c.get('analysis_version'):part['analysis_version']=c['analysis_version']
             if b['rules'].get('reference_matching')==2:
                 beat=raw.get('reference_beat')
                 beats=t.get('reference_analysis',{}).get('beats',[])
@@ -444,7 +454,7 @@ class Editing:
             self.check_stop(t['workspace_id'],t['id']);self.store.put('edit_task',t['workspace_id'],t)
         hypit_reference=bool(b['rules'].get('reference_evidence'))
         strict_clock=hypit_reference and b['rules'].get('reference_only')
-        candidates=self.candidates(t['product_id'],t['workspace_id'],b['rules'].get('analysis_mode'),b['rules'].get('use_prepared_files',False),reference_clock=strict_clock)
+        candidates=self.candidates(t['product_id'],t['workspace_id'],b['rules'].get('analysis_mode'),b['rules'].get('use_prepared_files',False),reference_clock=strict_clock,active_versions=b['rules'].get('matching_mode','semantic')=='semantic')
         reference_match=b['rules'].get('reference_matching')==2
         if reference_match:
             from workbench.reference import screen_sources
@@ -502,6 +512,8 @@ class Editing:
             if config.get('provider')!='codex' or config.get('model')!='gpt-6-luna':
                 raise ValueError('参考选片需要已登录 ChatGPT 的 Codex CLI 和 gpt-6-luna')
             options={'template':b.get('reference_template')} if hypit_reference else {}
+            if hypit_reference and b['rules'].get('evidence_standard'):
+                options['timed']=True
             reference=analyze(self.app,t['workspace_id'],b['reference'],allow_paid,**options)
             t['reference_analysis']=reference
             with self.app.lock:
@@ -509,6 +521,11 @@ class Editing:
                 self.store.put('edit_task',t['workspace_id'],t)
         from vision_api import call
         cache=self.folder(t['workspace_id'],t['batch_id'])/t['id']/'api-cache';cache.mkdir(parents=True,exist_ok=True)
+        if reference_match:
+            stock_file=cache.parent/'reference-stock.json'
+            if not stock_file.exists():
+                fields=('name','facts','asset_sha256','start','end','analysis_version','temporal_observation')
+                save(stock_file,{c['id']:{k:c[k] for k in fields if k in c} for c in candidates})
         if strict_clock:
             from workbench.reference import select_slots
             proposal=select_slots(config,reference,candidates,b,cache,allow_paid,lambda:self.check_stop(t['workspace_id'],t['id']))
@@ -577,7 +594,8 @@ class Editing:
                             notes.append(f'参考第 {beat} 段缺少符合时长和裁切范围的替代实拍')
                             continue
                         # Prefer covering the full slot among semantically supported choices.
-                        valid.sort(key=lambda x:-x['frames'])
+                        if not b['rules'].get('evidence_standard'):
+                            valid.sort(key=lambda x:-x['frames'])
                         part=dict(valid[0],alternatives=valid[1:3])
                     else:
                         part['start'],part['frames']=fit_beat(available[part['shot_id']],observation['end']-observation['start'])
@@ -599,6 +617,7 @@ class Editing:
                 raise ValueError('参考候选已失效，请核对原清单')
             self.check_stop(t['workspace_id'],t['id'])
             verdicts=audit_choices(self.app,b,choices,allow_paid,lambda:self.check_stop(t['workspace_id'],t['id']))
+            save(cache.parent/'reference-verdicts.json',verdicts)
             filtered=[];selected=[]
             for row in choices:
                 safe=[x for x in row if verdicts[span_key(x)]['verdict']=='different_shoot']

@@ -369,6 +369,23 @@ class Workbench:
         if root not in resolved.parents or not path.is_file():raise Problem('原文件已失效或路径越出素材库，请刷新扫描',409)
         if check_hash and digest(path)!=a['sha256']:raise Problem('原文件已变化，请重新扫描和识别',409)
         return path
+    def select_standard_version(self,p,w,asset_id,body):
+        self.workspace(p,w)
+        with self.lock:
+            self.asset_path(w,asset_id)
+            asset=self.store.get('asset',asset_id,w)
+            if body.get('sha256')!=asset['sha256'] or body.get('previous')!=asset.get('active_standard_version'):
+                raise Problem('素材或当前识别版已变化，请刷新后重选',409)
+            if 'version' not in body:raise Problem('请选择识别版本')
+            version=body['version']
+            if version is not None:
+                versions={s.get('analysis_version') or s.get('job_id') or 'legacy' for s in self.store.all('shot',w)
+                          if s['asset_id']==asset_id and s.get('asset_sha256')==asset['sha256']
+                          and s.get('analysis_mode','standard')=='standard' and not s.get('stale')}
+                if not isinstance(version,str) or version not in versions:raise Problem('该素材没有这个识别版',404)
+            asset['active_standard_version']=version
+            return self.store.put('asset',w,asset)
+
     def scan(self,p,w):
         self.workspace(p,w);from montage import probe,portrait_geometry,media_duration
         libs=self.store.all('library',w);found=[];errors=[]
@@ -389,6 +406,7 @@ class Workbench:
                         info=probe(path);portrait_geometry(info)
                         v=next(x for x in info['streams'] if x['codec_type']=='video')
                         a={'id':old['id'] if old else uid(),'workspace_id':w,'library_id':lib['id'],'path':str(path),'name':path.name,'kind':lib['kind'],'sha256':hash_,'duration':media_duration(info,'video'),'width':v['width'],'height':v['height'],'available':True,'version':(old or {}).get('version',0)+1}
+                        if old and old['sha256']==hash_:a['active_standard_version']=old.get('active_standard_version')
                         found.append(self.store.put('asset',w,a))
                         if old:
                             for s in self.store.all('shot',w):
@@ -428,6 +446,9 @@ class Workbench:
             from workbench.product_template import signature as template_signature
             if not template.get('confirmed') or template.get('source_signature')!=template_signature(self.product(p)):raise Problem('请先确认当前产品专属识别标准，资料变化后需重新生成',409)
             j['recognition_template']=template
+        if kind=='organize' and analysis_mode=='standard':
+            from explicit_recognition import VERSION
+            j['evidence_standard']=VERSION
         j.update(analysis_mode=analysis_mode,force_reanalysis=force is True)
         if kind=='organize':
             product=self.product(p);product['analysis_mode']=analysis_mode;self.store.put('product','root',product)
@@ -586,6 +607,7 @@ class Workbench:
         from product_display import DISPLAY_PROMPT
         from workbench.product_template import signature as template_signature,prompt as template_prompt
         VISUAL_PROMPT=VISUAL_PROMPT.replace(DISPLAY_PROMPT,'')
+        timed=mode=='standard' and bool(j.get('evidence_standard'))
         template=j.get('recognition_template')
         if mode=='standard' and template:
             request+='\n'+template_prompt(template)
@@ -597,20 +619,29 @@ class Workbench:
             from product_display import DISPLAY_PROMPT
             VISUAL_PROMPT=VISUAL_PROMPT.replace(DISPLAY_PROMPT,'')
             request+='\n简单展示识别：只判断是否为可用的当前产品画面和安全区间，不要求灯光变化或特定展示动作，不做详细用途分类；仍检查真实切镜、模糊遮挡和动作完整性。'
+        if timed:
+            request+='\n识别证据标准：'+j['evidence_standard']
         signature=digest_json({'analysis_mode':mode,'request':request,'kind':a['kind'],'model':self.config()['model'],
                                'endpoint':self.config()['base_url'],'workspace':w,'schema':2})
         reusable=document.get('complete') is True and document.get('signature')==signature
         taskfile=folder/'task.json'
         if not taskfile.exists():prepare(SimpleNamespace(video=str(source),request=request,output=str(folder),no_hypit=bool(document.get('hypit'))))
         task=read(taskfile)
+        if timed:task['evidence_standard']=j['evidence_standard']
         task['analysis_mode']=mode;task['recognition_template']=template;save(taskfile,task)
         if reusable:
             task['segments']=document.get('segments',[])
             task['analysis']=document.get('analysis',{})
             task['requirements']=document.get('requirements',{})
             from content_recognition import frames_between
+            if timed:
+                from explicit_recognition import TimedFrames
+                clock=TimedFrames(source,folder/'evidence'/a['sha256']/'timed')
             for segment in task['segments']:
-                segment['evidence']=frames_between(folder,task,segment['start'],segment['end'])
+                if timed:
+                    points=[x['time'] for x in segment.get('evidence',[]) if 'time' in x]
+                    segment['evidence']=clock.sample(segment['start'],segment['end'],max(.1,(segment['end']-segment['start'])/12),exact=points)
+                else:segment['evidence']=frames_between(folder,task,segment['start'],segment['end'])
                 if isinstance(segment.get('shot_review'),dict):segment['shot_review']['evidence']=segment['evidence']
         if task['source_sha256']!=a['sha256']:raise Problem('任务源文件版本已变化')
         task.update(workspace_id=w,product_id=j['product_id'],rights={'usage':'allowed' if j['rights_allowed'] else 'unknown','source':'本次用户工作台确认' if j['rights_allowed'] else '尚未确认'})
@@ -632,7 +663,7 @@ class Workbench:
         observe(SimpleNamespace(record=str(record),start=0,end=a['duration'],every=step))
         overview=[{'time':t,'path':str(evidence_root/f'{t:.6f}.jpg')} for t in [k*step for k in range(25)] if t<a['duration'] and (evidence_root/f'{t:.6f}.jpg').exists()]
         contextfile=folder/'intent.json'
-        if reusable or (document.get('model')==self.config()['model'] and document.get('context',{}).get('visual_details')):
+        if reusable or (not timed and document.get('model')==self.config()['model'] and document.get('context',{}).get('visual_details')):
             save(contextfile,document['context'])
         if not contextfile.exists() or not read(contextfile).get('visual_details'):
             context=call(self.config(),request+'\n先通览产品展示意图，只返回 JSON 对象 {"subject":"","intent":"","visible_result":"","visual_details":{},"unknowns":[]}。采样未见不能称连续完整。'+VISUAL_PROMPT,overview,folder/'vision-cache',j['allow_paid']);save(contextfile,context)
@@ -662,11 +693,14 @@ class Workbench:
                         target.append(x)
             save(boundaryfile,{'cuts':cuts,'transitions':transitions,'uncertain':unknowns,'limitation':'机械候选可能漏掉低变化跳剪，不是完整切镜保证'})
         boundaries=read(boundaryfile)
+        if timed:
+            task['observed_boundaries']=boundaries
+            save(taskfile,task)
         if not task.get('segments'):
             config_path=self.root/'vision-config.json';analyze(SimpleNamespace(task=str(taskfile),config=str(config_path),allow_paid=j['allow_paid']));task=read(taskfile)
         task['analysis'].update(product_intent=context,shot_boundaries=boundaries['cuts'],shot_boundary_reviewed=not boundaries['uncertain'],transition_ranges=boundaries['transitions'])
         for seg in task['segments']:
-            if not seg.get('visual_details'):seg['visual_details']=context.get('visual_details',{})
+            if not timed and not seg.get('visual_details'):seg['visual_details']=context.get('visual_details',{})
             overlap=next((x for x in boundaries['transitions']+boundaries['uncertain'] if seg['start']<x['end'] and seg['end']>x['start']),None)
             cut=next((c for c in boundaries['cuts'] if seg['start']<c['time']<seg['end']),None)
             if overlap or cut:seg.update(decision='uncertain',boundary_reviewed=False,review_reason='选区跨切点、转场或未确认范围，需重新选区')
@@ -686,7 +720,7 @@ class Workbench:
                 segments=[{'id':'whole','start':0,'end':a['duration'],'facts':context.get('visible_result',''),'reason':'已剪素材保持整条，不自动重切；需核查内部是否跨镜头','decision':'uncertain','candidate_reviews':task['segments']}]
         else:segments=task['segments']
         for seg in segments:
-            seg=dict(seg,analysis_mode=mode,analysis_version=j['id'],visual_details=seg.get('visual_details') or context.get('visual_details',{}))
+            seg=dict(seg,analysis_mode=mode,analysis_version=j['id'],visual_details=seg.get('visual_details') or ({} if timed else context.get('visual_details',{})))
             sid=hashlib.sha256((j['id']+a['id']+str(seg['id'])).encode()).hexdigest()[:32]
             old=next((s for s in self.store.all('shot',w) if s.get('id')==sid),None)
             row=dict(seg,id=sid,segment_id=seg['id'],workspace_id=w,asset_id=a['id'],asset_sha256=a['sha256'],task_path=str(taskfile),job_id=j['id'],kind=a['kind'],review_decision=(old or {}).get('review_decision','uncertain'),stale=False)
@@ -728,6 +762,13 @@ class Workbench:
             if any(a<x['end'] and b>x['start'] for x in ranges):raise Problem('选区包含转场混合帧')
             s.setdefault('selection_history',[]).append({'start':s['start'],'end':s['end'],'at':now(),'note':str(body.get('note',''))})
             s.update(start=a,end=b,human_confirmed=False,review_decision='uncertain')
+        observation=s.get('temporal_observation')
+        if observation and (s['start']>observation['required_start'] or s['end']<observation['required_end']
+                            or ('facts' in body and str(body['facts'])!=s.get('facts'))):
+            # The edited assertion no longer has the model's original supporting interval.
+            for key in ('temporal_observation','action_start','action_end'):
+                s.pop(key,None)
+            if 'safe_trim_ranges' not in body:s['safe_trim_ranges']=[]
         if 'facts' in body:s['facts']=str(body['facts'])[:10000]
         if 'safe_trim_ranges' in body:
             ranges=body['safe_trim_ranges']

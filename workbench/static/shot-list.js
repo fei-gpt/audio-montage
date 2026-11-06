@@ -19,8 +19,25 @@ function renderShots(query){
   $('#shotPrev').onclick=()=>{shotView.page--;renderShots()};$('#shotNext').onclick=()=>{shotView.page++;renderShots()};
   document.querySelectorAll('[data-shot-detail]').forEach(b=>b.onclick=()=>showShotDetail(b.dataset.shotDetail));
 }
+function timedObservationHTML(shot) {
+  const observation = shot.temporal_observation;
+  if (!observation || !Array.isArray(observation.points) || !Array.isArray(observation.unknowns)) return '';
+  const points = observation.points.map(p => `<li>${esc(p.time)} 秒 · ${esc(p.fact)}</li>`).join('');
+  return `<section><h3>展示用途与时间证据</h3><p>${esc(observation.purpose)}</p>
+    <p>必要区间 ${esc(observation.required_start)}–${esc(observation.required_end)} 秒</p>
+    <ul>${points}</ul>${observation.unknowns.length ? `<p>待确认 · ${esc(observation.unknowns.join('；'))}</p>` : ''}</section>`;
+}
 function showShotDetail(id){
   const w=W(),s=w.shots.find(s=>s.id===id);if(!s)return;const a=w.assets.find(a=>a.id===s.asset_id);
-  dialog(a?.name||'镜头详情',`<div style="max-height:70vh;overflow:auto"><p>${s.start.toFixed(3)}–${s.end.toFixed(3)} 秒 · ${s.kind==='prepared'?'已有片段，保留原边界':'原视频候选区间'}</p>${a?.available?`<video controls playsinline preload="metadata" class="preview-video" src="${esc(a.media_url)}#t=${s.start},${s.end}"></video>`:''}<h3>画面事实</h3><p class="result-note">${esc(s.facts||'待核实')}</p><p class="muted">${esc(s.reason||'')}</p>${visualDetailsHTML(s.visual_details)}${s.review_reason?`<p class="warning">${esc(s.review_reason)}</p>`:''}<div class="decision">${[['keep','保留'],['uncertain','待审'],['reject','排除']].map(([value,label])=>`<button data-review="${s.id}" data-value="${value}" class="${s.review_decision===value?'chosen':''}">${label}</button>`).join('')}</div><p class="small muted">审核：${esc(s.review_note||'尚无意见')}</p></div>`);
+  const versions=[...new Set(w.shots.filter(x=>a && x.asset_id===a.id && x.asset_sha256===a.sha256 && !x.stale && (x.analysis_mode||'standard')==='standard').map(x=>x.analysis_version||x.job_id||'legacy'))];
+  const versionLabel=v=>v==='legacy'?'旧版':((w.jobs||[]).find(j=>j.id===v)?.created_at||'识别版')+' · '+v.slice(0,8);
+  const versionSelector=versions.length>1 && (s.analysis_mode||'standard')==='standard' ? `<label class="field">语义选片使用的识别版（本素材）
+    <select id="activeStandardVersion"><option value="">所有已确认版本</option>${versions.map(v=>`<option value="${esc(v)}" ${a.active_standard_version===v?'selected':''}>${esc(versionLabel(v))}</option>`).join('')}</select></label>
+    <button id="saveStandardVersion">保存选片版本</button>`:'';
+  dialog(a?.name||'镜头详情',`<div style="max-height:70vh;overflow:auto"><p>${s.start.toFixed(3)}–${s.end.toFixed(3)} 秒 · ${s.kind==='prepared'?'已有片段，保留原边界':'原视频候选区间'}</p>${a?.available?`<video controls playsinline preload="metadata" class="preview-video" src="${esc(a.media_url)}#t=${s.start},${s.end}"></video>`:''}${versionSelector}${s.analysis_version?`<p class="small">当前查看 · ${esc(versionLabel(s.analysis_version))}</p>`:''}<h3>画面事实</h3><p class="result-note">${esc(s.facts||'待核实')}</p><p class="muted">${esc(s.reason||'')}</p>${timedObservationHTML(s)}${(s.candidate_reviews||[]).map(timedObservationHTML).join('')}${visualDetailsHTML(s.visual_details)}${s.review_reason?`<p class="warning">${esc(s.review_reason)}</p>`:''}<div class="decision">${[['keep','保留'],['uncertain','待审'],['reject','排除']].map(([value,label])=>`<button data-review="${s.id}" data-value="${value}" class="${s.review_decision===value?'chosen':''}">${label}</button>`).join('')}</div><p class="small muted">审核：${esc(s.review_note||'尚无意见')}</p></div>`);
+  $('#saveStandardVersion')?.addEventListener('click',()=>action(async()=>{
+    await api(`${wb()}/assets/${a.id}/standard-version`,'POST',{sha256:a.sha256,previous:a.active_standard_version||null,version:$('#activeStandardVersion').value||null});
+    $('#dialog').close();toast('已保存本素材的语义选片版本');
+  }));
   bindShotReviewButtons();
 }

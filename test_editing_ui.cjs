@@ -37,3 +37,10 @@ assert.equal((elements['#editClipPositions'].innerHTML.match(/disabled selected/
 assert.ok(elements['#editClipPositions'].innerHTML.includes('value="intro"'));
 assert.ok(elements['#editClipPositions'].innerHTML.includes('value="outro"'));
 console.log('Matching-mode choices and mandatory per-clip placement passed');
+
+vm.runInContext(fs.readFileSync('workbench/static/reference-review.js','utf8'),context);
+const diagnostic=context.diagnosticRow({index:1,reference:{start:0,end:1,action:'开盖',purpose:'展示打开过程',must_see:['盒盖移开']},
+  candidates:[{shot_id:'x',name:'盒子',facts:'盒盖闭合',rank:1}],selected:[],cases:[],gaps:[{start_frame:0,frames:30}],notes:[],
+  excluded:[{name:'长镜',reason:'no_safe_fit'}]},[],'r',null);
+for(const label of ['盒盖移开','盒盖闭合','缺素材','时长或安全裁切条件不符','保存为纠错样本'])assert.ok(diagnostic.includes(label));
+assert.ok(!diagnostic.includes('<video'));console.log('Reference gap diagnosis and correction controls passed');

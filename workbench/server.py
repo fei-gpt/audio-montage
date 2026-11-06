@@ -129,6 +129,12 @@ class Handler(BaseHTTPRequestHandler):
             gid,op=gen.groups()
             if method=='GET' and op is None:return app.generation.get(p,w,gid)
             if method=='POST' and op:return app.generation.action(p,w,gid,op,b)
+        review=re.fullmatch(r'editing/batches/([a-f0-9]{32})/tasks/([a-f0-9]{32})/(diagnosis|samples|checks)',rest or '')
+        if review:
+            from workbench.reference_review import diagnose,record
+            bid,tid,op=review.groups()
+            if method=='GET' and op=='diagnosis':return diagnose(app,p,w,bid,tid)
+            if method=='POST' and op in ('samples','checks'):return record(app,p,w,bid,tid,op,b)
         if rest=='editing/batches':
             if method=='POST':return app.editing.create(p,w,b)
             if method=='GET':return app.editing.list(p,w)
@@ -142,6 +148,8 @@ class Handler(BaseHTTPRequestHandler):
             if b.get('assigned') is True:ws['assigned']=True
             return s.put('workspace',p,ws)
         if rest=='libraries' and method=='POST':return app.attach_library(p,w,b.get('path',''),b.get('kind'))
+        version=re.fullmatch(r'assets/([a-f0-9]{32})/standard-version',rest or '')
+        if version and method=='POST':return app.select_standard_version(p,w,version[1],b)
         if rest=='scan' and method=='POST':return app.scan(p,w)
         if rest=='start' and method=='POST':return app.create_job(p,w,'organize',b.get('allow_paid'),b.get('request',''),b.get('rights_allowed'),b.get('asset_ids'),b.get('provider'),b.get('model'),b.get('analysis_mode'),b.get('force_reanalysis',False))
         if rest and rest.startswith('jobs/') and rest.endswith('/resume') and method=='POST':return app.resume(p,w,rest.split('/')[1],b.get('allow_paid'),b.get('retry_failed',False),b.get('continue_on_error'),b.get('asset_ids'))
