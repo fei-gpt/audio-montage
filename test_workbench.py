@@ -66,6 +66,21 @@ class WorkbenchTest(unittest.TestCase):
             self.assertEqual(os.environ['VISION_API_KEY'],'$(touch bad)')
         with self.assertRaises(Problem):self.app.set_config({'base_url':'https://api.deepseek.com','model':'deepseek-reasoner'})
 
+    def test_analysis_modes_and_explicit_reanalysis_are_preserved(self):
+        self.attach()
+        simple=self.app.create_job(self.p['id'],self.w['id'],'organize',False,analysis_mode='simple')
+        self.p['recognition_template']={'id':'test','confirmed':True}
+        from workbench.product_template import signature
+        self.p['recognition_template']['source_signature']=signature(self.p)
+        self.app.store.put('product','root',self.p)
+        standard=self.app.create_job(self.p['id'],self.w['id'],'organize',False,analysis_mode='standard',force=True)
+        self.assertNotEqual(simple['id'],standard['id'])
+        self.assertEqual(simple['analysis_mode'],'simple')
+        self.assertTrue(standard['force_reanalysis'])
+        self.assertEqual(self.app.store.get('job',simple['id'],self.w['id'])['analysis_mode'],'simple')
+        self.assertEqual(self.app.product(self.p['id'])['analysis_mode'],'standard')
+        with self.assertRaises(Problem):self.app.create_job(self.p['id'],self.w['id'],'organize',False,analysis_mode='invalid')
+
     def test_no_config_does_not_call_model_or_fake_completion(self):
         self.attach()
         self.app.set_config({'provider':'codex','model':'gpt-6-luna'})

@@ -6,6 +6,10 @@ from pathlib import Path
 def configure():
     repo = Path(__file__).resolve().parent
     candidates = [repo / '.media-runtime' / 'bin']
+    # Finder-launched processes do not inherit the terminal PATH.
+    codex_dir = Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS')
+    if (codex_dir / 'codex').is_file():
+        candidates.append(codex_dir)
     if os.environ.get('MONTAGE_MEDIA_BIN'):
         candidates.insert(0, Path(os.environ['MONTAGE_MEDIA_BIN']))
     for folder in reversed(candidates):
