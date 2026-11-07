@@ -179,7 +179,7 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
     """Ask about small groups of transferable purposes, using only existing observations."""
     import json
     from collections import Counter
-    from product_display import LIGHT_SWORD_MATCH, MATCH_PROMPT
+    from product_display import LIGHT_SWORD_CUT, LIGHT_SWORD_MATCH, MATCH_PROMPT
     from vision_api import call
     def terms(value):
         return set(re.findall('[a-z0-9]+',value.casefold())) | {
@@ -245,7 +245,7 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
             prompt=saved['prompt']
             groups=saved.get('slots') or json.loads(prompt.rsplit('\n',1)[1])['slots']
         else:
-            data={'product':batch['product_profile'].get('suggested_name'),'template':batch.get('reference_template'),
+            data={'product':batch['product_profile'].get('suggested_name') or batch['product_profile'].get('summary'),'template':batch.get('reference_template'),
                   'user':batch['rules']['request'],'all_purposes':[b['purpose'] for b in beats],
                   'already_selected':[facts[x['shot_id']] for x in parts if x['shot_id'] in facts],
                   'slots':groups}
@@ -254,7 +254,7 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
                           '若完全无对应作用才写gaps。')
             if batch['rules'].get('evidence_standard'):
                 substitute = '逐项核对must_see，必需事实缺失写gaps。只允许在flexible范围内替换。'
-            prompt=(MATCH_PROMPT+LIGHT_SWORD_MATCH+'\n你是替代素材剪辑师。选择能够表达同一展示目的的其他实拍，不要求复制演员身份、'
+            prompt=(MATCH_PROMPT+LIGHT_SWORD_MATCH+LIGHT_SWORD_CUT+'\n你是替代素材剪辑师。选择能够表达同一展示目的的其他实拍，不要求复制演员身份、'
                     '字幕原文、服装、墨镜、场地及颜色。模型不用计算时长，列表只含本机确认能用的区间。'
                     +substitute+'不能把常亮说成开灯，旋转主体与运镜要分开，手持不等于拆卸。'
                     '从全片考虑各段。参考中某一处的独特布景优先留给那一段，其他段选角度和场景有变化的实拍。'
