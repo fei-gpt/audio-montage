@@ -449,7 +449,7 @@ class Workbench:
         if kind=='organize' and analysis_mode=='standard':
             from explicit_recognition import VERSION
             j['evidence_standard']=VERSION
-        j.update(analysis_mode=analysis_mode,force_reanalysis=force is True)
+        j.update(analysis_mode=analysis_mode,force_reanalysis=force is True, light_sword_observation=True)
         if kind=='organize':
             product=self.product(p);product['analysis_mode']=analysis_mode;self.store.put('product','root',product)
         if asset_ids is not None:j['asset_ids']=asset_ids
@@ -619,6 +619,9 @@ class Workbench:
             from product_display import DISPLAY_PROMPT
             VISUAL_PROMPT=VISUAL_PROMPT.replace(DISPLAY_PROMPT,'')
             request+='\n简单展示识别：只判断是否为可用的当前产品画面和安全区间，不要求灯光变化或特定展示动作，不做详细用途分类；仍检查真实切镜、模糊遮挡和动作完整性。'
+        if j.get('light_sword_observation'):
+            from product_display import LIGHT_SWORD_OBSERVATION
+            request+=LIGHT_SWORD_OBSERVATION
         if timed:
             request+='\n识别证据标准：'+j['evidence_standard']
         signature=digest_json({'analysis_mode':mode,'request':request,'kind':a['kind'],'model':self.config()['model'],

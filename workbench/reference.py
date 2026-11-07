@@ -158,7 +158,7 @@ def fit_slot(candidate, beat, preferred=None):
 
 def stock_observation(c):
     details=c.get('interval_details') or {}
-    relevant=('product_observations','product_display','framing','shot_size','subject','actions',
+    relevant=('product_observations','product_display','light_sword','framing','shot_size','subject','actions',
               'people_hands','camera','lighting','background')
     fields={k:details[k] for k in relevant if details.get(k)}
     return {k:c[k] for k in ('id','name','facts','start','end','frames','usage_count','safe_trim_ranges')} | {'observed':fields}
@@ -179,7 +179,7 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
     """Ask about small groups of transferable purposes, using only existing observations."""
     import json
     from collections import Counter
-    from product_display import MATCH_PROMPT
+    from product_display import LIGHT_SWORD_MATCH, MATCH_PROMPT
     from vision_api import call
     def terms(value):
         return set(re.findall('[a-z0-9]+',value.casefold())) | {
@@ -188,7 +188,7 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
     for c in candidates:
         observed=stock_observation(c)
         info=observed['observed']
-        compact={k:info[k] for k in ('product_display','product_observations') if info.get(k)}
+        compact={k:info[k] for k in ('product_display','product_observations','light_sword') if info.get(k)}
         if c.get('temporal_observation') and batch['rules'].get('evidence_standard'):
             compact['temporal_observation']=c['temporal_observation']
         brief=re.sub(r'(?:\d+(?:\.\d+)?\s*[/、,，]\s*){3,}\d+(?:\.\d+)?','多个采样点',c['facts'])
@@ -218,19 +218,27 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
                     excluded.append([c['id'],'no_safe_fit'])
                     continue
                 score=sum(math.log1p(len(candidates)/df[w]) for w in words[c['id']] & target)
-                ranked.append((fit[1]==slot_frames(beat),score,c,fit))
-            if batch['rules'].get('evidence_standard'):
-                ranked.sort(key=lambda row:(row[1],row[0]),reverse=True)
-            else:
-                ranked.sort(key=lambda row:(row[0],row[1]),reverse=True)
-            rejected[i]=excluded+[[c['id'],'outside_shortlist'] for _,_,c,_ in ranked[14:]]
+                expected=beat.get('light_sword') or {}
+                observed=facts[c['id']]['tags'].get('light_sword') or {}
+                visual_match=sum(1 if observed[k]==expected[k] else -1
+                                 for k in ('packaging','visible_count','arrangement')
+                                 if isinstance(expected,dict) and isinstance(observed,dict)
+                                 and expected.get(k) not in (None,'unknown')
+                                 and observed.get(k) not in (None,'unknown'))
+                full_slot=fit[1]==slot_frames(beat)
+                rank=(score,full_slot) if batch['rules'].get('evidence_standard') else (full_slot,score)
+                ranked.append(((visual_match,*rank),c,fit))
+            ranked.sort(key=lambda row:row[0],reverse=True)
+            rejected[i]=excluded+[[c['id'],'outside_shortlist'] for _,c,_ in ranked[14:]]
             options=[]
-            for _,_,c,fit in ranked[:14]:
+            for _,c,fit in ranked[:14]:
                 key=c['id']
                 options.append(dict(id=key,**facts[key],usable_frames=fit[1],start=fit[0]))
             groups.append(dict(reference_beat=i,seconds=[beat['start'],beat['end']],purpose=beat['purpose'],
                                action=beat['action'],choices=options))
             if 'must_see' in beat:groups[-1].update(must_see=beat['must_see'],flexible=beat['flexible'])
+            if beat.get('light_sword'):
+                groups[-1]['light_sword']=beat['light_sword']
         request_path=cache/f'slots-{base+1}.json'
         if request_path.is_file():
             saved=read(request_path)
@@ -246,7 +254,7 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
                           '若完全无对应作用才写gaps。')
             if batch['rules'].get('evidence_standard'):
                 substitute = '逐项核对must_see，必需事实缺失写gaps。只允许在flexible范围内替换。'
-            prompt=(MATCH_PROMPT+'\n你是替代素材剪辑师。选择能够表达同一展示目的的其他实拍，不要求复制演员身份、'
+            prompt=(MATCH_PROMPT+LIGHT_SWORD_MATCH+'\n你是替代素材剪辑师。选择能够表达同一展示目的的其他实拍，不要求复制演员身份、'
                     '字幕原文、服装、墨镜、场地及颜色。模型不用计算时长，列表只含本机确认能用的区间。'
                     +substitute+'不能把常亮说成开灯，旋转主体与运镜要分开，手持不等于拆卸。'
                     '从全片考虑各段。参考中某一处的独特布景优先留给那一段，其他段选角度和场景有变化的实拍。'

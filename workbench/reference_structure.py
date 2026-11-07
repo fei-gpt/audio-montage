@@ -9,7 +9,7 @@ from pathlib import Path
 
 from hypit_adapter import _hypit_command, _json_output, _run
 from montage import fingerprint, read, save
-from product_display import MATCH_PROMPT
+from product_display import LIGHT_SWORD_OBSERVATION, MATCH_PROMPT
 
 
 def align_to_picture(result, path, folder):
@@ -132,6 +132,7 @@ def analyze(app, workspace, upload, allow_paid, template=None, *, timed=False):
         # Older attempts used the base prompt. Preserve their request identity on resume.
         if not any((folder/'model-cache').glob('*.attempt.json')):
             prompt+='\n观察部件数量、连接处和双手接触前后状态，区分同一物件转动、改变组合形态和切镜。观察不到分离过程时只记录可见状态。'
+            prompt+=LIGHT_SWORD_OBSERVATION
             if timed:
                 prompt+=('\n每段再给出 must_see（表达此用途必须看见的事实）、'
                          'flexible（允许替换的差异）字符串数组，以及 boundary_kind '
