@@ -7,6 +7,7 @@ import random
 import secrets
 from collections import Counter
 from pathlib import Path
+from workbench.duration_planner import available_frames_at_30fps
 from types import SimpleNamespace
 from montage import probe, portrait_geometry, media_duration, fingerprint, read, save, timing, check_segments, srt_time
 from video_document import load_document
@@ -308,7 +309,7 @@ class Editing:
                 uses=len(counts.get(a['sha256'],{}))
                 if a.get('kind')!='prepared' or uses>=LIMIT:continue
                 if fingerprint(Path(a['path']))!=a['sha256']:continue
-                end=a['duration'];frames=math.floor(end*30+1e-6)
+                end=a['duration'];frames=available_frames_at_30fps(end)
                 if frames<1:continue
                 result.append(dict(id=a['id'],asset_id=a['id'],asset_sha256=a['sha256'],name=a['name'],
                                    start=0,end=end,frames=frames,usage_count=uses,usage_limit=LIMIT,
@@ -340,7 +341,7 @@ class Editing:
             ):
                 ranges=[{'start':s['start'],'end':s['end']}]
             result.append({'id':s['id'],'asset_id':a['id'],'asset_sha256':a['sha256'],'name':a['name'],
-                           'start':s['start'],'end':s['end'],'frames':int(math.floor((s['end']-s['start'])*30+1e-6)),
+                           'start':s['start'],'end':s['end'],'frames':available_frames_at_30fps(s['end']-s['start']),
                            'usage_count':len(counts.get(a['sha256'],{})),'usage_limit':LIMIT,
                            'safe_trim_ranges':ranges,'facts':s.get('facts',''),'visual_details':s.get('visual_details') or ({} if s.get('temporal_observation') else doc.get('context',{}).get('visual_details',{})),
                            'action_start':s.get('action_start'),'action_end':s.get('action_end'),
@@ -424,7 +425,7 @@ class Editing:
         return t
 
     def minimum_shot_frames(self,w):
-        return min((max(1,math.floor(a['duration']*30+1e-6))
+        return min((max(1,available_frames_at_30fps(a['duration']))
                     for a in self.app.visible_assets(w) if a.get('duration',0)>0),default=1)
 
     def validate_plan(self,b,t,plan,available=None):

@@ -4,6 +4,11 @@ import random
 import re
 from pathlib import Path
 
+def available_frames_at_30fps(seconds):
+    # ffprobe rounds durations to microseconds.
+    return math.floor(seconds*30+0.00002)
+
+
 def numeric_order(name):
     found=re.search(r"(\d+)$",Path(name or "").stem)
     return int(found[1]) if found else None
@@ -89,13 +94,13 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
             if not free_selection and len(parts)>=2 and compact_number_run([parts[-2]['source_name'],parts[-1]['source_name'],c.get('name')]):continue
             choices=[(c['start'],c['frames'])]
             for r in c.get('safe_trim_ranges',[]):
-                available_frames=math.floor((r['end']-r['start'])*30+1e-6)
+                available_frames=available_frames_at_30fps(r['end']-r['start'])
                 slack=max(0,available_frames-min(remaining,available_frames))
                 offsets={rng.randint(0,slack) for _ in range(min(8,slack+1))}
                 offsets.update(range(1,min(5,slack)+1))
                 starts=[r['start']]+[r['start']+n/30 for n in offsets]+[x['end'] for x in occupied if x['asset_sha256']==c['asset_sha256'] and r['start']<=x['end']<r['end']]
                 for start in starts:
-                    frames=min(remaining,math.floor((r['end']-start)*30+1e-6))
+                    frames=min(remaining,available_frames_at_30fps(r['end']-start))
                     choices.append((start,frames))
             for start,frames in set(choices):
                 if not min_frames<=frames<=remaining or 0<remaining-frames<min_frames:continue

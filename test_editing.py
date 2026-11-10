@@ -18,6 +18,12 @@ class EditingTest(unittest.TestCase):
         run(['ffmpeg','-v','error','-nostdin','-y','-f','lavfi','-i','color=blue:s=90x160:r=30:d=1',
              '-f','lavfi','-i','sine=frequency=440:duration=1','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',cls.intro])
         run(['ffmpeg','-v','error','-nostdin','-y','-f','lavfi','-i','color=red:s=90x160:r=30:d=3','-c:v','libx264',cls.clip])
+        cls.short_clips={}
+        for frames in (3,15,31):
+            path=root/f'minimum-{frames}.mp4'
+            run(['ffmpeg','-v','error','-nostdin','-y','-f','lavfi','-i','color=green:s=90x160:r=30',
+                 '-frames:v',str(frames),'-c:v','libx264',path])
+            cls.short_clips[frames]=path
         # PCM in an MP3-named container gives an exact two-second test timeline.
         run(['ffmpeg','-v','error','-nostdin','-y','-f','lavfi','-i','sine=frequency=880:duration=2','-f','wav',cls.audio])
     @classmethod
@@ -30,11 +36,31 @@ class EditingTest(unittest.TestCase):
         self.library=self.root/'library';self.library.mkdir();shutil.copy2(self.clip,self.library/'clip.mp4')
         self.app.attach_library(self.p['id'],self.w['id'],str(self.library),'prepared');self.app.scan(self.p['id'],self.w['id'])
         self.asset=self.app.visible_assets(self.w['id'])[0]
+        # The library minimum includes unreviewed sources, which cannot be selected.
+        self.add_minimum_source(15)
         task=self.root/'task.json';save(task,{'analysis':{'shot_boundaries':[],'transition_ranges':[]}})
         self.shot=self.app.store.put('shot',self.w['id'],{'asset_id':self.asset['id'],'asset_sha256':self.asset['sha256'],'start':0,'end':3,
             'review_decision':'keep','human_confirmed':True,'facts':'red toy','safe_trim_ranges':[{'start':0,'end':3}],'task_path':str(task)})
         write_document(self.library/'clip.mp4',self.asset['sha256'],complete=True,context={'visual_details':{'subject':'red toy'}})
+    def add_minimum_source(self,frames):
+        source=self.short_clips[frames]
+        shutil.copy2(source,self.library/source.name)
+        self.app.scan(self.p['id'],self.w['id'])
+
     def tearDown(self):self.tmp.cleanup()
+
+    def test_minimum_uses_shortest_existing_source(self):
+        w=self.w['id']
+        self.assertEqual(self.app.editing.minimum_shot_frames(w),15)
+        b=self.create()
+        task=self.task(b)
+        (self.library/self.short_clips[15].name).unlink()
+        self.assertEqual(self.app.editing.minimum_shot_frames(w),90)
+        self.add_minimum_source(31)
+        self.assertEqual(self.app.editing.minimum_shot_frames(w),31)
+        (self.library/self.short_clips[31].name).unlink()
+        with self.assertRaisesRegex(ValueError,'90'):
+            self.app.editing.validate_plan(b,task,self.proposal())
     def create(self,**kw):return self.app.editing.create(self.p['id'],self.w['id'],dict(input_path=str(self.inputs),timing_confirmed=True,rights_allowed=True,**kw))
     def task(self,b):return self.app.editing.tasks(self.w['id'],b['id'])[0]
     def op(self,b,op,body=None):
@@ -168,6 +194,7 @@ class EditingTest(unittest.TestCase):
         with self.assertRaises(Problem):eng.media(p,self.w2['id'],t['id']+'-2')
 
     def test_reference_clock_keeps_three_frame_intro_and_missing_tail(self):
+        self.add_minimum_source(3)
         from workbench.reference import span_key
         eng=self.app.editing
         w,p=self.w['id'],self.p['id']
