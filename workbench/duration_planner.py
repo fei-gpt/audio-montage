@@ -47,7 +47,7 @@ def _batch_overlap_score(parts,history):
     return max(ratios,default=0),endings,sum(ratios)
 
 
-def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, accept=None, seed=None, ending_counts=None, batch_counts=None,free_selection=False,batch_history=()):
+def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, accept=None, seed=None, ending_counts=None, batch_counts=None,free_selection=False,batch_history=(),required_cuts=(),preferred_cuts=(),shot_priority=None,min_frames=1,prefer_full_slots=False,shot_allowed=None):
     rng=random.Random(seed)
     planned=batch_counts or {}
     usage_priority={
@@ -55,10 +55,21 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
         for c in candidates
     } if free_selection else {}
     total=math.ceil(duration*30-1e-7)
-    boundaries=sorted({min(total,max(0,math.ceil(s['end']*30-1e-7))) for s in timeline['segments']}|{total})
-    budgets=[];previous=0
-    for boundary in boundaries:
-        if boundary>previous:budgets.append(boundary-previous);previous=boundary
+    cuts=set(required_cuts)
+    boundaries=sorted(({min(total,max(0,math.ceil(s['end']*30-1e-7))) for s in timeline['segments']}|cuts|set(preferred_cuts)|{total})-{0})
+    fixed=sorted(cuts|{total})
+    retained=[]
+    start=0
+    for end in fixed:
+        for boundary in boundaries:
+            if start+min_frames<=boundary<=end-min_frames:
+                retained.append(boundary)
+                start=boundary
+        retained.append(end)
+        start=end
+    boundaries=retained
+    slot_starts=[0]+boundaries[:-1]
+    budgets=[end-start for start,end in zip(slot_starts,boundaries)]
     nodes=0
     def overlap(c,start,end,occupied):
         return any(c['asset_sha256']==x['asset_sha256'] and min(end,x['end'])-max(start,x['start'])>1e-6 for x in occupied)
@@ -69,7 +80,11 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
         if index==len(budgets):return parts if accept is None or accept(parts) else None
         if remaining==0:return search(index+1,budgets[index+1] if index+1<len(budgets) else 0,parts,occupied)
         options=[]
+        frame=slot_starts[index]+budgets[index]-remaining
         for c in candidates:
+            if shot_allowed and not shot_allowed(c['id'],frame):continue
+            if remaining==budgets[index] and slot_starts[index] in cuts and parts and parts[-1]['asset_sha256']==c['asset_sha256']:
+                continue
             if parts and ascending(parts[-1].get('source_name'),c.get('name')):continue
             if not free_selection and len(parts)>=2 and compact_number_run([parts[-2]['source_name'],parts[-1]['source_name'],c.get('name')]):continue
             choices=[(c['start'],c['frames'])]
@@ -83,7 +98,7 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
                     frames=min(remaining,math.floor((r['end']-start)*30+1e-6))
                     choices.append((start,frames))
             for start,frames in set(choices):
-                if not 0<frames<=remaining:continue
+                if not min_frames<=frames<=remaining or 0<remaining-frames<min_frames:continue
                 end=start+frames/30
                 if c.get('action_start') is not None and (start>c['action_start']+1e-6 or end<c['action_end']-1e-6):continue
                 if overlap(c,start,end,occupied):continue
@@ -101,12 +116,16 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
             options.sort(key=lambda part:usage_priority[part['asset_sha256']])
             used_sources={p['asset_sha256'] for p in parts}
             options=[p for p in options if p['asset_sha256'] not in used_sources]
+        if shot_priority:
+            options.sort(key=lambda part:(shot_priority(part['shot_id'],frame,frame+part['frames']==total), prefer_full_slots and part['frames']!=remaining))
         for part in options:
             result=search(index,remaining-part['frames'],parts+[part],occupied+[part])
             if result is not None:return result
         return None
     result=search(0,budgets[0] if budgets else 0,[],list(used))
-    if not result:raise ValueError('现有素材或安全裁切范围无法在搜索范围内匹配断句时长，请补充素材或确认安全裁切范围')
+    if not result:
+        if cuts:raise ValueError('现有素材无法同时满足必切时间点、时长和安全裁切要求，请核对切点或补充素材')
+        raise ValueError('现有素材或安全裁切范围无法在搜索范围内匹配断句时长，请补充素材或确认安全裁切范围')
     if free_selection and batch_history:
         score=_batch_overlap_score(result,batch_history)
         for _ in range(12):

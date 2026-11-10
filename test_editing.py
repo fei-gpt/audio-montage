@@ -65,6 +65,59 @@ class EditingTest(unittest.TestCase):
             self.assertEqual(t['plan']['matching_mode'],'duration')
             self.assertEqual([x['frames'] for x in t['plan']['parts']],[30,30])
             self.op(b,'preview');self.assertEqual(self.task(b)['status'],'awaiting_review')
+    def test_uploaded_music_uses_its_duration_without_transcription(self):
+        music=self.upload(self.audio,'music')
+        b=self.app.editing.create(self.p['id'],self.w['id'],{'primary_music_id':music['id'],'rights_allowed':True})
+        t=self.task(b)
+        self.assertEqual(t['audio_sha256'],music['sha256'])
+        self.assertIsNone(b['music'])
+        with patch('workbench.local_asr.transcribe',side_effect=AssertionError('music needs no ASR')),patch('vision_api.call',side_effect=AssertionError('music needs no model')):
+            self.op(b,'plan')
+            self.assertEqual(self.task(b)['status'],'planned')
+            self.op(b,'preview')
+        t=self.task(b)
+        self.assertEqual(t['status'],'awaiting_review',t.get('error'))
+        self.assertEqual(t['preview']['report']['duration'],2)
+
+    def test_music_required_cut_trims_prepared_clips_and_checks_export_plan(self):
+        self.p['name']='lightplay'
+        self.app.store.put('product','root',self.p)
+        source=self.app.store.get('asset',self.shot['asset_id'],self.w['id'])
+        source['user_category']={'labels':['单把光剑旋转'],'confirmed':True}
+        self.app.store.put('asset',self.w['id'],source)
+        self.shot['facts']='平稳清晰的单把旋转展示'
+        self.shot.pop('safe_trim_ranges')
+        self.app.store.put('shot',self.w['id'],self.shot)
+        shutil.copy2(self.intro,self.library/'other.mp4')
+        self.app.scan(self.p['id'],self.w['id'])
+        a=next(a for a in self.app.visible_assets(self.w['id']) if a['name']=='other.mp4')
+        write_document(a['path'],a['sha256'],complete=True)
+        a['user_category']={'labels':['四把合体光剑旋转'],'confirmed':True}
+        self.app.store.put('asset',self.w['id'],a)
+        self.app.store.put('shot',self.w['id'],dict(self.shot,id='other',asset_id=a['id'],asset_sha256=a['sha256'],end=1,facts='四把合体旋转变色',visual_details={'light_sword':{'arrangement':'connected_four'}}))
+        music=self.upload(self.audio,'music')
+        b=self.app.editing.create(self.p['id'],self.w['id'],{
+            'primary_music_id':music['id'],'rights_allowed':True,'required_cuts':'00:00:01:00'})
+        self.op(b,'plan')
+        t=self.task(b)
+        self.assertEqual(t['status'],'planned',t.get('error'))
+        parts=t['plan']['parts']
+        self.assertEqual(parts[0]['frames'],30)
+        self.assertEqual([part['source_name'] for part in parts[:2]],['clip.mp4','other.mp4'])
+        self.assertEqual(sum(part['frames'] for part in parts),60)
+        self.assertNotEqual(parts[0]['asset_sha256'],parts[1]['asset_sha256'])
+        with self.assertRaisesRegex(ValueError,'跨过指定'):
+            self.app.editing.validate_plan(b,t,self.proposal())
+        self.op(b,'preview')
+        self.assertEqual(self.task(b)['status'],'awaiting_review',self.task(b).get('error'))
+        from subprocess import check_output
+        output=self.task(b)['preview']['path']
+        pixels=check_output(['ffmpeg','-v','error','-i',output,'-vf',
+                             r'select=between(n\,29\,30),scale=1:1','-pix_fmt','rgb24',
+                             '-fps_mode','passthrough','-f','rawvideo','-'])
+        self.assertEqual(len(pixels),6)
+        self.assertLess((pixels[0]-pixels[2])*(pixels[3]-pixels[5]),0)
+
     def test_upload_timing_uses_default_local_runtime_without_paid_api(self):
         n=self.upload(self.audio,'narration');b=self.app.editing.create(self.p['id'],self.w['id'],{
             'narrations':[{'id':n['id'],'script':'Show the red toy.'}],'rights_allowed':True})

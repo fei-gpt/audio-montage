@@ -6,13 +6,16 @@ import zipfile
 
 
 def knowledge_archive(product):
-    profile=product.get('profile') or {}
-    text=[f"# {product['name']} · 产品文字语料包", '', '已保存的理解结论；宣传主张、未知项和冲突均按原记录保留。', '']
-    for key,label in [('appearance','外观'),('claims','来源宣传主张'),('demonstrations','展示方式'),('unknowns','未知项'),('conflicts','冲突')]:
+    profile={k:v for k,v in (product.get('profile') or {}).items() if k not in {'claims','unknowns','conflicts'}}
+    text=[f"# {product['name']} · 产品文字语料包", '', '已保存的产品重点。', '']
+    for key,label in [('appearance','外观'),('demonstrations','展示方式')]:
         text.extend(['## '+label,''])
         text.extend('- '+(row if isinstance(row,str) else row.get('text',json.dumps(row,ensure_ascii=False))) for row in profile.get(key,[]))
         text.append('')
     payload={'format':'audio-montage-knowledge-v1','name':product['name'],'profile':profile}
+    if 'editing_guidelines' in product:
+        payload['editing_guidelines']=product['editing_guidelines']
+        text.extend(['## 剪辑总纲','',product['editing_guidelines'],''])
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('product-knowledge.md','\n'.join(text).encode('utf-8'))

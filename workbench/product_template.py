@@ -1,6 +1,29 @@
 """Product-specific recognition templates; source changes invalidate confirmation."""
 import hashlib,json
 
+def baseline(product):
+    dimensions = [
+        ('quantity', '展示数量', ['单个', '多个独立', '组合展示'], '按同一画面中可辨认的产品计数，能数清就写具体数量。'),
+        ('packaging', '包装展示', ['有', '无'], '只记录画面是否出现产品包装。'),
+        ('lighting', '产品灯光', ['亮', '未亮', '变化'], '只观察产品本身的灯光。认定变化须看见变化前后的状态。'),
+        ('camera', '运镜方式', ['固定', '推进', '拉远', '平移', '环绕', '其他'], '依据连续画面判断相机运动，区分主体移动与切镜。'),
+    ]
+    return {
+        'id': 'builtin-baseline-v1', 'confirmed': True, 'builtin': True,
+        'source_signature': signature(product),
+        'definition': {
+            'summary': '通用基础识别标准',
+            'dimensions': [
+                {'id': key, 'label': label, 'values': values + ['unknown', 'not_applicable'],
+                 'evidence_rule': rule}
+                for key, label, values, rule in dimensions
+            ],
+            'unknowns': [],
+        },
+        'manual_rules': '\n'.join(f'{label}：{rule}' for _, label, _, rule in dimensions),
+    }
+
+
 def signature(product):
     data={k:product.get(k) for k in ('name','profile','extra_request')}
     return hashlib.sha256(json.dumps(data,sort_keys=True,ensure_ascii=False).encode()).hexdigest()

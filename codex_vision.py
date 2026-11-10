@@ -8,7 +8,7 @@ from montage import fingerprint,read,save
 from vision_json import decode_response
 
 
-def call(config,prompt,evidence,cache,allow_paid):
+def call(config,prompt,evidence,cache,allow_paid,*,output_schema=None):
     model=config.get('model')
     if not isinstance(model,str) or not model.strip():raise ValueError('Codex必须明确指定模型')
     binary=shutil.which(config.get('codex_bin','codex'))
@@ -48,6 +48,11 @@ def call(config,prompt,evidence,cache,allow_paid):
     # supplied images are staged, never the user's source videos or other accounts.
     with tempfile.TemporaryDirectory(prefix='montage-codex-') as temporary:
         folder=Path(temporary);output=folder/'response.json';command=[binary,'exec','--ignore-user-config','--skip-git-repo-check','--ephemeral','--sandbox','read-only','--model',model,'--json','--color','never','--cd',str(folder),'-o',str(output)]
+        if output_schema is not None:
+            schema_path=folder/'schema.json'
+            save(schema_path,output_schema)
+            command.extend(['--output-schema',str(schema_path)])
+            prompt+='\n遵循输出 Schema；原提示示例中的可省略字段按 Schema 填写，无修正边界或不适用的对象用 null。'
         frames=[]
         for i,frame in enumerate(evidence):
             image=folder/f'{i:04d}.jpg';shutil.copyfile(frame['path'],image)

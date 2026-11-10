@@ -14,7 +14,7 @@ def run(args):
 
 
 def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,check_cancel=lambda:None,
-           clips=(),music=None,music_volume=.15):
+           clips=(),music=None,music_volume=.15,output_name=None):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=False)
     width,height=(360,640) if preview else (1080,1920)
     body_frames=math.ceil(media_duration(probe(audio),'audio')*30-1e-7)
@@ -107,7 +107,7 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
                   f'atrim=start_sample={cut*1600},asetpts=PTS-STARTPTS,adelay={cut*1600}S:all=1[headtail];')
         mix+='[headtail]';count+=1
     filters+=mix+f'amix=inputs={count}:duration=first:normalize=0,alimiter=limit=0.98:level=false:latency=1[a]'
-    out=folder/('preview.mp4' if preview else 'final.mp4')
+    out=folder/(output_name or ('preview.mp4' if preview else 'final.mp4'))
     run(cmd+['-filter_complex',filters,'-map','0:v:0','-map','[a]','-c:v','copy','-c:a','aac',
              '-ar','48000','-t',expected,'-movflags','+faststart',out])
     check_cancel();oi=probe(out);portrait_geometry(oi)

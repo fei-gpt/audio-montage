@@ -11,16 +11,18 @@ class CodexVisionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);image=root/'frame.jpg';image.write_bytes(b'fixture')
             config={'provider':'codex','model':'gpt-6-luna'};seen=[]
+            schema={'type':'object','properties':{'subject':{'type':'string'}},'required':['subject'],'additionalProperties':False}
             def execute(command,**kwargs):
                 seen.append(command)
                 if command[1:]==['login','status']:return SimpleNamespace(returncode=0,stdout='Logged in using ChatGPT',stderr='')
                 self.assertEqual(command[command.index('--model')+1],'gpt-6-luna')
                 self.assertEqual(command[command.index('--sandbox')+1],'read-only')
                 self.assertIn('--image',command);self.assertNotIn('OPENAI_API_KEY',kwargs['env'])
+                self.assertEqual(json.loads(Path(command[command.index('--output-schema')+1]).read_text(encoding='utf-8')),schema)
                 Path(command[command.index('-o')+1]).write_text('{"subject":"toy"}',encoding='utf-8')
                 return SimpleNamespace(returncode=0)
             with patch('codex_vision.shutil.which',return_value='codex.exe'),patch('codex_vision.subprocess.run',side_effect=execute),patch('urllib.request.build_opener',side_effect=AssertionError('HTTP forbidden')):
-                self.assertEqual(call(config,'observe',[{'time':0,'path':str(image)}],root/'cache',True),{'subject':'toy'})
+                self.assertEqual(call(config,'observe',[{'time':0,'path':str(image)}],root/'cache',True,output_schema=schema),{'subject':'toy'})
                 self.assertEqual(call(config,'observe',[{'time':0,'path':str(image)}],root/'cache',False),{'subject':'toy'})
             self.assertEqual(len(seen),2)
 

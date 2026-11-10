@@ -35,10 +35,12 @@ def api_key(config):
     return os.environ.get(env)
 
 
-def call(config, prompt, evidence, cache, allow_paid):
+def call(config, prompt, evidence, cache, allow_paid, *, output_schema=None):
     config=execution_config.get() or config
     if config.get('provider')=='codex':
         from codex_vision import call as codex_call
+        if output_schema is not None:
+            return codex_call(config,prompt,evidence,cache,allow_paid,output_schema=output_schema)
         return codex_call(config,prompt,evidence,cache,allow_paid)
     validate_model(config['base_url'], config['model'])
     endpoint = config['base_url'].rstrip('/') + '/chat/completions'
@@ -274,7 +276,13 @@ def analyze(args):
             if timed:
                 review_prompt += REVIEW
             shown = dense
-            review = call(config, review_prompt + VISUAL_PROMPT, dense, cache, args.allow_paid)
+            review_options={}
+            if (execution_config.get() or config).get('provider')=='codex':
+                from recognition_schema import dense_review_schema
+                review_options['output_schema']=dense_review_schema(task.get('recognition_template'),timed)
+            review = call(config, review_prompt + VISUAL_PROMPT, dense, cache, args.allow_paid, **review_options)
+            if isinstance(review,dict) and review.get('start','missing') is None and review.get('end','missing') is None:
+                review={key:value for key,value in review.items() if key not in {'start','end'}}
             if not isinstance(review, dict):
                 raise ValueError('模型复核响应不是 JSON 对象')
             bounds, boundary_problem = corrected_bounds(s, review, start, end)

@@ -9,10 +9,13 @@ const context={location:{hash:'#editing'},$:key=>elements[key]??=element(),esc:S
   generationSection:()=>'',bindGeneration(){},document:{querySelectorAll:()=>[]}};
 vm.createContext(context);vm.runInContext(fs.readFileSync('workbench/static/editing-pairs.js','utf8'),context);vm.runInContext(fs.readFileSync('workbench/static/editing.js','utf8'),context);
 const rows=Array.from({length:123},(_,i)=>({id:String(i),name:String(i),status:'ready',audio_duration:2}));
+rows[0].output={media_url:'/media/edit/task-1?sig=token',path:'C:\\outputs\\toy-152-165-6-97-215-1.mp4'};
 let page=context.editingRows(rows,1);assert.equal(page.rows.length,20);assert.equal(page.pages,7);
 page=context.editingRows(rows,99);assert.equal(page.rows.length,3);assert.equal(page.page,7);
 workspace.editing_batches=[{id:'batch',created_at:'today',tasks:rows,rules:{mode:'preview'},input_path:'input',output_path:'output'}];
 context.editingHome();assert.equal((elements['#main'].innerHTML.match(/data-edit-detail=/g)||[]).length,20);
+assert.ok(elements['#main'].innerHTML.includes('download="toy-152-165-6-97-215-1.mp4"'));
+assert.ok(elements['#main'].innerHTML.includes('>toy-152-165-6-97-215-1.mp4</td>'));
 assert.ok(!elements['#main'].innerHTML.includes('<video'));assert.ok(elements['#main'].innerHTML.includes('先预览再确认'));
 console.log('Editing pagination (123 tasks), compact list and lazy video loading passed');
 let modal='';context.dialog=(title,html)=>{modal=html};context.wb=()=>'/account';
@@ -31,12 +34,17 @@ workspace.shots=[];workspace.assets=[];
 context.editBatchDialog();
 assert.ok(modal.includes('name="matching_mode"'));
 assert.ok(modal.includes('value="duration"'));assert.ok(modal.includes('value="semantic"'));
-elements['#editClips'].onchange({target:{files:[{name:'intro.mp4'},{name:'outro.mp4'}]}});
-assert.equal((elements['#editClipPositions'].innerHTML.match(/ required/g)||[]).length,2);
-assert.equal((elements['#editClipPositions'].innerHTML.match(/disabled selected/g)||[]).length,2);
-assert.ok(elements['#editClipPositions'].innerHTML.includes('value="intro"'));
-assert.ok(elements['#editClipPositions'].innerHTML.includes('value="outro"'));
-console.log('Matching-mode choices and mandatory per-clip placement passed');
+assert.ok(!modal.includes('id="editClips"'));
+assert.ok(!modal.includes('id="editReference"'));
+elements['#editAudioKind'].value='music';
+elements['#editAudioKind'].onchange();
+assert.equal(elements['[name="matching_mode"]'].value,'duration');
+assert.equal(elements['#editScripts'].hidden,true);
+assert.equal(elements['#editBackgroundMusic'].hidden,true);
+context.editBatchDialog(true);
+assert.ok(modal.includes('id="editReference"'));
+assert.ok(!modal.includes('id="editAudioKind"'));
+console.log('Voice, music and reference modes are separated');
 
 vm.runInContext(fs.readFileSync('workbench/static/reference-review.js','utf8'),context);
 const diagnostic=context.diagnosticRow({index:1,reference:{start:0,end:1,action:'开盖',purpose:'展示打开过程',must_see:['盒盖移开']},

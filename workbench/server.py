@@ -52,6 +52,15 @@ class Handler(BaseHTTPRequestHandler):
                 if length>45_000_000:raise Problem('请求文件过大',413)
                 body=json.loads(self.rfile.read(length) or b'{}')
                 if not isinstance(body,dict):raise Problem('请求需要对象')
+            if path=='/api/restart' and method=='POST':
+                if os.name!='nt':raise Problem('此重启入口仅支持 Windows',409)
+                if not getattr(self.server,'restart_args',None):raise Problem('当前启动方式不支持重启',409)
+                with self.app.lock:
+                    if not getattr(self.server,'restarting',False):
+                        subprocess.Popen([sys.executable,'-m','workbench.restart',str(os.getpid()),*self.server.restart_args],
+                                         cwd=REPO,creationflags=subprocess.CREATE_NO_WINDOW)
+                        self.server.restarting=True
+                return self.json({'restarting':True},202)
             package=re.fullmatch(r'/api/products/([a-f0-9]+)/knowledge.zip',path)
             if package and method=='GET':
                 from workbench.knowledge import knowledge_archive
@@ -113,7 +122,10 @@ class Handler(BaseHTTPRequestHandler):
             return s.put('product','root',obj)
         if tail=='sources' and method=='POST':return app.add_source(p,b)
         if tail=='sources/reference' and method=='POST':return app.reference_sources(p,b.get('selections'))
+        if tail=='editing-guidelines' and method=='POST':return app.save_editing_guidelines(p,b.get('text'))
         if tail=='knowledge/reference' and method=='POST':return app.reference_knowledge(p,b.get('product_ids'))
+        if tail=='shot-categories/rename' and method=='POST':return app.rename_shot_category(p,b.get('old'),b.get('new'))
+        if tail=='shot-categories' and method=='POST':return app.save_shot_categories(p,b.get('categories'))
         if tail=='recognition-template' and method=='POST':return app.generate_template(p,b.get('allow_paid') is True)
         if tail=='recognition-template/confirm' and method=='POST':return app.confirm_template(p,b)
         if tail=='understand' and method=='POST':return app.create_job(p,None,'understand',b.get('allow_paid'))
@@ -147,7 +159,9 @@ class Handler(BaseHTTPRequestHandler):
             if b.get('name'):ws['name']=str(b['name']).strip()[:100]
             if b.get('assigned') is True:ws['assigned']=True
             return s.put('workspace',p,ws)
-        if rest=='libraries' and method=='POST':return app.attach_library(p,w,b.get('path',''),b.get('kind'))
+        if rest=='libraries' and method=='POST':return app.attach_library(p,w,b.get('path',''),b.get('kind'),b.get('category'))
+        category_asset=re.fullmatch(r'assets/([a-f0-9]{32})/category',rest or '')
+        if category_asset and method=='POST':return app.confirm_asset_category(p,w,category_asset[1],b.get('labels',b.get('label')),b.get('confirmed',True) is True)
         version=re.fullmatch(r'assets/([a-f0-9]{32})/standard-version',rest or '')
         if version and method=='POST':return app.select_standard_version(p,w,version[1],b)
         if rest=='scan' and method=='POST':return app.scan(p,w)
@@ -207,6 +221,7 @@ def main():
     load_local_env(REPO/'.env.workbench')
     parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8766);parser.add_argument('--data',default=str(REPO/'.workbench-data'));args=parser.parse_args()
     server=make_server(args.data,args.port);print(f'素材工作台 http://127.0.0.1:{server.server_port}',flush=True)
+    server.restart_args=['--port',str(server.server_port),'--data',str(Path(args.data).resolve())]
     try:server.serve_forever()
     finally:server.app.generation.close();server.app.pool.shutdown(wait=False,cancel_futures=True);server.server_close()
 
