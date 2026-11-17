@@ -33,7 +33,7 @@ def overlapping_uses(entries, interval):
         for entry in entries)
 
 
-def ledger(store, extra_paths=()):
+def ledger(store, extra_paths=(), *, workspace=None):
     events = {}
     for task in store.all('edit_task'):
         if not task.get('output'):
@@ -41,7 +41,8 @@ def ledger(store, extra_paths=()):
         for sha,ranges in task_ranges(store,task).items():
             events.setdefault(sha,{})[task['id']]={'task_id':task['id'],'batch_id':task['batch_id'],'ranges':ranges}
     # Sidecars travel with footage; copying/renaming the same bytes cannot reset usage.
-    paths = {(a['path'], a['sha256']) for a in store.all('asset')} | set(extra_paths)
+    assets=store.all('asset') if workspace is None else store.all('asset',workspace)
+    paths = {(a['path'], a['sha256']) for a in assets} | set(extra_paths)
     for path, sha in paths:
         doc = Path(str(path) + '.usage.json')
         if not doc.exists():
@@ -71,7 +72,7 @@ def check(store, task, batch):
     extra = [(c['path'], c['sha256']) for c in batch.get('clips', [])]
     if task.get('intro'):
         extra.append((task['intro'], task['intro_sha256']))
-    events = ledger(store, extra)
+    events = ledger(store, extra, workspace=task['workspace_id'])
     occupied = {}
     for other in store.all('edit_task'):
         if other['id'] == task['id'] or other.get('output'):
@@ -86,15 +87,17 @@ def check(store, task, batch):
             raise ValueError('素材区间已达到3次引用上限或剩余次数已被输出任务占用，请更换片段：'+sha[:12])
 
 
-def sync(store, only_shas=None):
-    paths = {(a['path'], a['sha256']) for a in store.all('asset')}
-    for task in store.all('edit_task'):
+def sync(store, only_shas=None, *, workspace=None):
+    assets=store.all('asset') if workspace is None else store.all('asset',workspace)
+    tasks=store.all('edit_task') if workspace is None else store.all('edit_task',workspace)
+    paths = {(a['path'], a['sha256']) for a in assets}
+    for task in tasks:
         if task.get('intro') and task.get('intro_sha256'):
             paths.add((task['intro'], task['intro_sha256']))
         batch = store.get('edit_batch', task['batch_id'], task['workspace_id'])
         paths.update((c['path'], c['sha256']) for c in batch.get('clips', []))
-    events = ledger(store, paths)
-    material_paths={(a['path'],a['sha256']) for a in store.all('asset')}
+    events = ledger(store, paths, workspace=workspace)
+    material_paths={(a['path'],a['sha256']) for a in assets}
     paths=paths & material_paths
     if only_shas is not None:
         paths = {(p, sha) for p, sha in paths if sha in only_shas}

@@ -5,11 +5,13 @@ import math
 import re
 import random
 import secrets
+from shutil import copyfile
+from tempfile import TemporaryDirectory
 from collections import Counter
 from pathlib import Path
 from workbench.duration_planner import available_frames_at_30fps
 from types import SimpleNamespace
-from montage import probe, portrait_geometry, media_duration, fingerprint, read, save, timing, check_segments, srt_time
+from montage import probe, portrait_geometry, media_duration, fingerprint, read, save, timing, check_segments
 from video_document import load_document
 from workbench.backend import Problem, uid, now
 
@@ -385,7 +387,7 @@ class Editing:
 
     def candidates(self,p,w,analysis_mode=None,use_prepared_files=False,*,reference_clock=False,active_versions=False,allow_prepared_trim=False):
         from workbench.usage import ledger, LIMIT
-        counts=ledger(self.store)
+        counts=ledger(self.store,workspace=w)
         assets={a['id']:a for a in self.app.visible_assets(w)};result=[]
         aliases=self.app.product(p).get('shot_category_aliases',{})
         def confirmed_categories(asset):
@@ -522,6 +524,11 @@ class Editing:
         return min((max(1,available_frames_at_30fps(a['duration']))
                     for a in self.app.visible_assets(w) if a.get('duration',0)>0),default=1)
 
+    @staticmethod
+    def distinct_batch_sources(batch):
+        return (batch.get('variant_count',1)>1 or 'pairing_report' in batch
+                or batch['rules'].get('distinct_variant_sources',False))
+
     def validate_plan(self,b,t,plan,available=None):
         minimum=self.minimum_shot_frames(t['workspace_id'])
         strict_clock=bool(b['rules'].get('reference_evidence') and b['rules'].get('reference_only'))
@@ -618,7 +625,7 @@ class Editing:
                        and shot_request_satisfied(rule,available[part['shot_id']])
                        for i,part in enumerate(parts,1)):
                 raise ValueError('未满足剪辑要求：'+rule['text'])
-        if b['rules'].get('distinct_variant_sources'):
+        if self.distinct_batch_sources(b):
             used_sources=[part['asset_sha256'] for part in parts]
             peer_sources={part['asset_sha256'] for peer in self.history(t)
                           if peer['batch_id']==t['batch_id'] and peer['status']!='cancelled'
@@ -718,12 +725,11 @@ class Editing:
         if not candidates:raise ValueError('当前账号没有可用的已确认素材（需完整分析JSON且引用不足3次），请补充或审核其他素材')
         random.Random(t['selection_seed']).shuffle(candidates)
         peer_counts=Counter()
-        if b.get('variant_count',1)>1:
+        if self.distinct_batch_sources(b):
             for peer in self.history(t):
-                if peer['batch_id']==t['batch_id']:
+                if peer['batch_id']==t['batch_id'] and peer['status']!='cancelled':
                     peer_counts.update({x['asset_sha256'] for x in peer.get('plan',{}).get('parts',[])})
-            if b['rules'].get('distinct_variant_sources'):
-                candidates=[c for c in candidates if c['asset_sha256'] not in peer_counts]
+            candidates=[c for c in candidates if c['asset_sha256'] not in peer_counts]
             candidates=[dict(c,variant_uses=peer_counts[c['asset_sha256']]) for c in candidates]
         parent=next((x for x in self.history(t) if x['id']==t.get('regenerated_from')),None) if t.get('regenerated_from') else None
         if parent:
@@ -753,12 +759,12 @@ class Editing:
             from product_display import LIGHT_SWORD_ROTATIONS
             single_ids={c['id'] for c in candidates if contains_category(c,LIGHT_SWORD_ROTATIONS['single'])}
             from workbench.usage import LIMIT,ledger,overlapping_uses
-            usage=ledger(self.store)
+            usage=ledger(self.store,workspace=t['workspace_id'])
             def request_rank(part,ordinal,frame,last,parts):
                 start=round(part['start']*30)
                 if overlapping_uses(usage.get(part['asset_sha256'],{}).values(),[start,start+part['frames']])>=LIMIT:
                     return None
-                if b['rules'].get('distinct_variant_sources') and any(
+                if self.distinct_batch_sources(b) and any(
                         prior['asset_sha256']==part['asset_sha256'] for prior in parts):
                     return None
                 current=by_id[part['shot_id']]
@@ -1127,10 +1133,12 @@ class Editing:
         from workbench.edit_media import render
         clips=b.get('clips',[])
         output_name=None
-        if preview:
-            folder=self.folder(t['workspace_id'],t['batch_id'])/t['id']/('preview-'+uid())
-        else:
-            folder=Path(b['output_path'])/(t['name']+'-'+t['id'][:8]+'-'+uid()[:8])
+        attempt=uid()
+        task_root=self.folder(t['workspace_id'],t['batch_id'])/t['id']
+        task_root.mkdir(parents=True,exist_ok=True)
+        destination=task_root/('preview-'+attempt)
+        if not preview:
+            destination=Path(b['output_path'])/(t['name']+'-'+t['id'][:8]+'-'+attempt[:8])
             names=[Path(t['intro']).name] if t.get('intro') else []
             names.extend(c['name'] for c in clips if c['position']=='intro')
             names.extend(x['source_name'] or Path(x['path']).name for x in parts)
@@ -1142,20 +1150,27 @@ class Editing:
                 tokens.append(str(int(number[1])) if number else stem)
             library=Path(parts[0]['path']).parent.name
             output_name=re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', '-'.join([library,*tokens]))+'.mp4'
-        out,report=render(t.get('intro'),t['audio'],parts,folder,preview,b['rules']['keep_original_audio'],lambda:self.check_stop(t['workspace_id'],t['id']),
-            clips=clips,music=b.get('music'),music_volume=b['rules'].get('music_volume',.15),output_name=output_name,target_duration=t.get('target_duration'))
-        self.check_inputs(b,t)
-        report['dedup_report']=t.get('dedup_report',{})
-        if b['rules'].get('reference_evidence'):
-            report['reference_gaps']=gaps
-        report['human_reviewed']=bool(t.get('human_reviewed')) if not preview else False
-        save(folder/'validation.json',report)
-        key='preview' if preview else 'output';t[key]={'path':str(out),'sha256':fingerprint(out),'report':report,'plan_revision':t['plan_revision']}
-        if not preview:
-            save(folder/'制作记录.json',{'rules':b['rules'],'input':{k:t[k] for k in ('intro','audio','intro_sha256','audio_sha256','script') if k in t},'clips':b.get('clips',[]),'music':b.get('music'),
-                                      'timeline':t['timeline'],'plan':t['plan'],'validation':report,'human_reviewed':t.get('human_reviewed',False)})
-            offset=report['intro_seconds'];segments=[s for s in t['timeline']['segments'] if s.get('text','').strip()]
-            (folder/'captions.srt').write_text('\n\n'.join(f'{i}\n{srt_time(s["start"]+offset)} --> {srt_time(s["end"]+offset)}\n{s["text"]}' for i,s in enumerate(segments,1))+'\n',encoding='utf-8')
+        with TemporaryDirectory(prefix='render-',dir=task_root) as scratch:
+            folder=Path(scratch)/'media'
+            out,report=render(t.get('intro'),t['audio'],parts,folder,preview,b['rules']['keep_original_audio'],lambda:self.check_stop(t['workspace_id'],t['id']),
+                clips=clips,music=b.get('music'),music_volume=b['rules'].get('music_volume',.15),output_name=output_name,target_duration=t.get('target_duration'))
+            self.check_inputs(b,t)
+            report['dedup_report']=t.get('dedup_report',{})
+            if b['rules'].get('reference_evidence'):
+                report['reference_gaps']=gaps
+            report['human_reviewed']=bool(t.get('human_reviewed')) if not preview else False
+            destination.mkdir(parents=True,exist_ok=False)
+            pending=destination/'.rendering.tmp'
+            try:
+                copyfile(out,pending)
+                self.check_stop(t['workspace_id'],t['id'])
+                published=pending.rename(destination/out.name)
+            except BaseException:
+                pending.unlink(missing_ok=True)
+                destination.rmdir()
+                raise
+        key='preview' if preview else 'output'
+        t[key]={'path':str(published),'sha256':report['sha256'],'report':report,'plan_revision':t['plan_revision']}
         return t
 
     def regenerate(self,p,w,b,source,allow_paid,variants=1,*,distinct_variant_sources=True):
@@ -1302,7 +1317,7 @@ class Editing:
         fixed_paths=[(clip['path'],clip['sha256']) for clip in b.get('clips',[])]
         fixed_paths.extend((task['intro'],task['intro_sha256']) for task,_ in pending if task.get('intro'))
         try:
-            historical=ledger(self.store,fixed_paths)
+            historical=ledger(self.store,fixed_paths,workspace=w)
         except (OSError,ValueError) as exc:
             for task,_ in pending:self.batch_plan_error(w,task,exc)
             return
@@ -1358,7 +1373,7 @@ class Editing:
                     self.check_stop(w,tid);self.store.put('edit_task',w,t)
                     if t.get('output'):
                         from workbench.usage import sync,sources
-                        try:t['usage_sync']=sync(self.store,sources(self.store,t))
+                        try:t['usage_sync']=sync(self.store,sources(self.store,t),workspace=w)
                         except (OSError,ValueError) as exc:t['usage_sync']={'error':str(exc)}
                         self.store.put('edit_task',w,t)
             except Stopped:pass

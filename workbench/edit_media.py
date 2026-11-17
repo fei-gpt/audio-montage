@@ -6,7 +6,7 @@ looping, aspect-ratio conversions or invented video frames are permitted.
 import math
 import subprocess
 from pathlib import Path
-from montage import probe, portrait_geometry, media_duration, fingerprint, save
+from montage import probe, portrait_geometry, media_duration, fingerprint
 
 
 def run(args):
@@ -121,4 +121,4 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
             'music_body_only':bool(music),'music_volume':music_volume if music else 0,'music_looped':False,
             'intro_audio_tail_seconds':intro_audio_tail[2] if intro_audio_tail else 0,
             'keep_original_audio':keep_original_audio,'human_reviewed':False}
-    save(folder/'validation.json',report);return out,report
+    return out,report

@@ -52,3 +52,17 @@ const diagnostic=context.diagnosticRow({index:1,reference:{start:0,end:1,action:
   excluded:[{name:'长镜',reason:'no_safe_fit'}]},[],'r',null);
 for(const label of ['盒盖移开','盒盖闭合','缺素材','时长或安全裁切条件不符','保存为纠错样本'])assert.ok(diagnostic.includes(label));
 assert.ok(!diagnostic.includes('<video'));console.log('Reference gap diagnosis and correction controls passed');
+
+let retryRequest;
+context.api=(url,method,body)=>{retryRequest={url,method,body}};
+context.action=fn=>fn();
+workspace.editing_batches[0].rules.matching_mode='duration';
+workspace.editing_batches.push({...workspace.editing_batches[0],id:'newer'});
+context.editingHome();
+context.editOperation('resume','6').then(()=>{
+  assert.equal(retryRequest.url,'/account/editing/batches/batch/resume');
+  assert.equal(retryRequest.method,'POST');
+  assert.equal(JSON.stringify(retryRequest.body.task_ids),'["6"]');
+  assert.equal(context.currentEditBatch().id,'batch');
+  console.log('Editing retry keeps the selected history record and task');
+}).catch(error=>{console.error(error);process.exitCode=1});

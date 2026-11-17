@@ -286,8 +286,12 @@ class EditingTest(unittest.TestCase):
         with self.assertRaises(Problem):self.app.editing.action(self.p['id'],self.w['id'],b['id'],'output',{})
         self.op(b,'output',{'task_ids':[t['id']],'content_confirmed':True,'preview_sha256':t['preview']['sha256']})
         t=self.task(b);self.assertEqual(t['status'],'completed',t.get('error'))
-        out=Path(t['output']['path']);self.assertTrue(out.is_file());self.assertTrue((out.parent/'制作记录.json').is_file())
-        self.assertIn('00:00:01,000 --> 00:00:03,000',(out.parent/'captions.srt').read_text(encoding='utf-8'))
+        out=Path(t['output']['path']);self.assertTrue(out.is_file())
+        self.assertEqual(list(out.parent.iterdir()),[out])
+        task_root=self.app.editing.folder(self.w['id'],b['id'])/t['id']
+        preview=Path(t['preview']['path'])
+        self.assertEqual(list(preview.parent.iterdir()),[preview])
+        self.assertFalse(list(task_root.glob('render-*')))
         self.assertEqual(fingerprint(self.inputs/'1.mp4'),fingerprint(self.intro))
         # Distinct sine waves prove the original intro and narration are on the correct sides of the join.
         import array

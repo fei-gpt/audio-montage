@@ -11,6 +11,7 @@ class UsageTest(unittest.TestCase):
     tearDownClass=classmethod(fixtures.EditingTest.tearDownClass.__func__)
     setUp=fixtures.EditingTest.setUp
     tearDown=fixtures.EditingTest.tearDown
+    add_minimum_source=fixtures.EditingTest.add_minimum_source
     create=fixtures.EditingTest.create
     task=fixtures.EditingTest.task
     proposal=fixtures.EditingTest.proposal
@@ -25,9 +26,9 @@ def history(self,count):
     return b,t
 
 
-def test_three_successful_outputs_cap_whole_source_and_sync_is_idempotent(self):
+def test_three_successful_outputs_cap_overlapping_range_and_sync_is_idempotent(self):
     b,t=history(self,3)
-    self.assertEqual(self.app.editing.candidates(self.p['id'],self.w['id']),[])
+    self.assertTrue(self.app.editing.candidates(self.p['id'],self.w['id']))
     with self.assertRaisesRegex(ValueError,'3次'):check(self.app.store,t,b)
     before=(self.library/'clip.mp4').read_bytes()
     sync(self.app.store);sync(self.app.store)
@@ -36,10 +37,6 @@ def test_three_successful_outputs_cap_whole_source_and_sync_is_idempotent(self):
     self.assertEqual(doc['引用次数'],3);self.assertFalse(doc['可继续引用'])
     self.assertEqual(len(doc['references']),3)
     self.assertEqual((self.library/'clip.mp4').read_bytes(),before)
-    # A different shot range or filename with the same source hash cannot reset it.
-    self.shot.update(id='another-shot',start=1,end=2)
-    self.app.store.put('shot',self.w['id'],self.shot)
-    self.assertEqual(self.app.editing.candidates(self.p['id'],self.w['id']),[])
 
 
 def test_preview_failure_and_duplicate_parts_do_not_inflate_count(self):
@@ -63,6 +60,6 @@ def test_concurrent_reservation_protects_last_slot_and_failed_job_releases_it(se
     check(self.app.store,t,b)
 
 
-UsageTest.test_three_successful_outputs_cap_whole_source_and_sync_is_idempotent=test_three_successful_outputs_cap_whole_source_and_sync_is_idempotent
+UsageTest.test_three_successful_outputs_cap_overlapping_range_and_sync_is_idempotent=test_three_successful_outputs_cap_overlapping_range_and_sync_is_idempotent
 UsageTest.test_preview_failure_and_duplicate_parts_do_not_inflate_count=test_preview_failure_and_duplicate_parts_do_not_inflate_count
 UsageTest.test_concurrent_reservation_protects_last_slot_and_failed_job_releases_it=test_concurrent_reservation_protects_last_slot_and_failed_job_releases_it

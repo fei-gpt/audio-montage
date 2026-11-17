@@ -3,6 +3,26 @@ function editPairBatchDialog(){
   dialog('批量导入同名 MP4＋MP3',`<form id="pairBatchForm"><div class="meta-box">使用 ${esc(P().name)} / ${esc(w.name)} 的素材库；已剪片段可直接随机选用，按配音时长裁切。每组前段视频独立保留，不会整批共用片头。</div><p>命名规则：<strong>001.mp4 ＋ 001.mp3</strong>、<strong>002.mp4 ＋ 002.mp3</strong>。扩展名前的名字必须一致；只读取当前文件夹，不递归、不修改原文件。</p><label class="field"><span>配对文件夹</span><div class="inline"><input id="pairInput" required placeholder="选择包含整批MP4和MP3的文件夹" style="flex:1;min-width:0"><button type="button" id="pairBrowse">选择文件夹</button></div></label><button type="button" id="pairInspect">检查整批配对</button><div id="pairResults" role="status" style="margin:12px 0">先选择文件夹并检查配对。</div><label class="field"><span>时间匹配方式</span><select name="timing_basis">${P().sentence_editing_only?'':'<option value="audio_duration">整条配音时长 · 不转写、不调用模型</option>'}<option value="sentences">按断句对齐 · 本地获取实际配音时间轴</option></select></label><label class="field"><span>输出方式</span><select name="mode"><option value="preview">批量生成预览，再确认输出</option><option value="direct">直接批量输出（未人工审片）</option></select></label><details><summary>输出位置与其他设置</summary><label class="field"><span>输出父目录（留空则在输入目录新建输出文件夹）</span><div class="inline"><input id="pairOutput" name="output_path" style="flex:1;min-width:0"><button type="button" id="pairOutputBrowse">选择文件夹</button></div></label><label class="field"><span>断句识别语言</span><select name="language"><option value="auto">自动检测</option><option value="zh">中文</option><option value="en">英语</option><option value="es">西班牙语</option></select></label><label class="check-label"><input type="checkbox" name="keep_original_audio">保留后段素材原声（前段视频始终保留原声）</label><label class="check-label"><input type="checkbox" name="timing_confirmed">如使用同名SRT／JSON，已确认它对应当前MP3</label></details><label class="check-label"><input type="checkbox" name="rights_allowed" required>已确认本批文件与账号素材可用于制作</label><button class="primary" id="pairCreate" disabled>检查配对后批量创建并开始</button></form>`);
   const reset=()=>{version++;checked=null;$('#pairCreate').disabled=true;$('#pairResults').textContent='路径已变化，请重新检查配对。'};
   $('#pairInput').oninput=reset;
+  const folderInput=$('#pairInput');
+  folderInput.addEventListener('dragover',event=>{
+    event.preventDefault();
+    event.dataTransfer.dropEffect='copy';
+  });
+  folderInput.addEventListener('drop',event=>{
+    event.preventDefault();
+    const transfer=event.dataTransfer;
+    const entry=transfer.items?.[0]?.webkitGetAsEntry?.();
+    const path=(transfer.files.length===1&&entry?.isDirectory?transfer.files[0].path:'')
+      ||transfer.getData('text/plain').trim().replace(/^"(.*)"$/,'$1');
+    if(!/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(path)){
+      toast(entry?.isDirectory?'浏览器未提供文件夹路径。可在资源管理器复制文件夹路径并粘贴。':'请拖入一个文件夹或文件夹的完整路径。');
+      return;
+    }
+    folderInput.value=path;
+    reset();
+    $('#pairInspect').click();
+  });
+
   $('#pairBrowse').onclick=()=>browseLocalFolder($('#pairInput'));
   $('#pairOutputBrowse').onclick=()=>browseLocalFolder($('#pairOutput'));
   $('#pairInspect').onclick=async()=>{const current=++version,path=$('#pairInput').value.trim();checked=null;$('#pairCreate').disabled=true;$('#pairResults').textContent='正在检查整批文件名…';try{
