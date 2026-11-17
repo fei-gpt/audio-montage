@@ -2,6 +2,7 @@
 function defaultWorkspace(product, currentId, preferences) {
   const accounts = product.workspaces.filter(w => w.assigned);
   if (product.workspaces.some(w => w.id === currentId)) return currentId;
+  if (product.workspaces.length === 1 && accounts.length === 1) return accounts[0].id;
   if (Object.prototype.hasOwnProperty.call(preferences, product.id)) {
     const saved = preferences[product.id];
     if (saved === '') return null;

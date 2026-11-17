@@ -37,7 +37,7 @@ class EditingTest(unittest.TestCase):
         self.app.attach_library(self.p['id'],self.w['id'],str(self.library),'prepared');self.app.scan(self.p['id'],self.w['id'])
         self.asset=self.app.visible_assets(self.w['id'])[0]
         # The library minimum includes unreviewed sources, which cannot be selected.
-        self.add_minimum_source(15)
+        EditingTest.add_minimum_source(self,15)
         task=self.root/'task.json';save(task,{'analysis':{'shot_boundaries':[],'transition_ranges':[]}})
         self.shot=self.app.store.put('shot',self.w['id'],{'asset_id':self.asset['id'],'asset_sha256':self.asset['sha256'],'start':0,'end':3,
             'review_decision':'keep','human_confirmed':True,'facts':'red toy','safe_trim_ranges':[{'start':0,'end':3}],'task_path':str(task)})
@@ -91,6 +91,88 @@ class EditingTest(unittest.TestCase):
             self.assertEqual(t['plan']['matching_mode'],'duration')
             self.assertEqual([x['frames'] for x in t['plan']['parts']],[30,30])
             self.op(b,'preview');self.assertEqual(self.task(b)['status'],'awaiting_review')
+    def test_generated_narration_requirements_are_scoped_to_each_task(self):
+        p,w=self.p['id'],self.w['id']
+        product=self.app.store.get('product',p,'root')
+        self.app.store.put('product','root',dict(product,shot_categories=['主体展示','静态展示']))
+        edit=self.app.editing
+        first=self.upload(self.audio,'narration')
+        second=self.upload(self.audio,'narration')
+        for upload in (first,second):
+            self.app.store.put('edit_upload',w,dict(upload,generated_narration=True))
+        common='最后一镜优先用静态展示'
+        specific='第一镜必须用主体展示'
+        batch=edit.create(p,w,{'narrations':[{'id':first['id'],'request':specific},{'id':second['id']}],
+            'request':common,'matching_mode':'duration','rights_allowed':True})
+        tasks={task['audio']:task for task in edit.tasks(w,batch['id'])}
+        first_task,second_task=tasks[first['path']],tasks[second['path']]
+        self.assertEqual([r['text'] for r in edit.task_batch(batch,first_task)['rules']['shot_requests']],[common,specific])
+        self.assertEqual([r['text'] for r in edit.task_batch(batch,second_task)['rules']['shot_requests']],[common])
+        self.assertEqual(batch['rules']['request'],common)
+        checked=edit.inspect_narration_request(p,w,{'id':first['id'],'common':common,'request':specific})
+        self.assertEqual(checked['requirements'][1]['labels'],['主体展示'])
+        checked=edit.inspect_narration_request(p,w,{'id':first['id'],'request':'全片排除静态展示'})
+        self.assertEqual(checked['requirements'][0]['excluded'],['静态展示'])
+        with self.assertRaisesRegex(Problem,'同一镜头的剪辑要求冲突'):
+            edit.inspect_narration_request(p,w,{'id':first['id'],'common':'第一镜必须用静态展示','request':specific})
+        with self.assertRaisesRegex(Problem,'未匹配到展示类别'):
+            edit.inspect_narration_request(p,w,{'id':first['id'],'request':'第一镜必须用不存在的类别'})
+        with self.assertRaises(Problem):
+            edit.inspect_narration_request(p,self.w2['id'],{'id':first['id'],'request':specific})
+
+    def test_ten_generated_narrations_render_with_one_shared_background_track(self):
+        import array
+        import math
+
+        p,w=self.p['id'],self.w['id']
+        for i in range(1,10):
+            path=self.library/f'batch-{i}.mp4'
+            run(['ffmpeg','-v','error','-f','lavfi','-i',
+                 f'color=0x{(i * 21):02x}5522:s=90x160:r=30:d=3','-c:v','libx264',path])
+        self.app.scan(p,w)
+        for asset in self.app.visible_assets(w):
+            if asset['name'].startswith('batch-'):
+                write_document(Path(asset['path']),asset['sha256'],complete=True,context={})
+                self.app.store.put('shot',w,{**self.shot,'id':asset['id']+'-shot',
+                    'asset_id':asset['id'],'asset_sha256':asset['sha256']})
+        narrations=[]
+        cache=self.app.wroot(w)/'editing-audio'
+        for i in range(10):
+            path=self.root/f'narration-{i}.mp3'
+            run(['ffmpeg','-v','error','-f','lavfi','-i',f'sine=frequency={700+10*i}:duration=2','-f','wav',path])
+            upload=self.upload(path,'narration')
+            self.app.store.put('edit_upload',w,dict(upload,generated_narration=True,script=f'Copy {i}'))
+            save(cache/(upload['sha256']+'-auto.json'),{'audio_sha256':upload['sha256'],
+                 'segments':[{'start':0,'end':2,'text':f'Copy {i}'}]})
+            narrations.append({'id':upload['id']})
+        music=self.root/'shared-music.mp3'
+        run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=330:duration=3',music])
+        batch=self.app.editing.create(p,w,{'narrations':narrations,'music_id':self.upload(music,'music')['id'],
+            'music_volume':30,'matching_mode':'duration','mode':'direct','rights_allowed':True})
+        self.op(batch,'plan')
+        tasks=self.app.editing.tasks(w,batch['id'])
+        self.assertEqual(len(tasks),10)
+        self.assertEqual(len({part['asset_sha256'] for task in tasks for part in task.get('plan',{}).get('parts',[])}),10,
+                         [task.get('error') for task in tasks])
+        for task in tasks:
+            with self.subTest(task=task['name']):
+                self.assertEqual(task['status'],'completed',task.get('error'))
+                output=task['output']
+                self.assertEqual(output['report']['duration'],2)
+                self.assertEqual(output['report']['music_volume'],.3)
+                pcm=run(['ffmpeg','-v','error','-ss','0.2','-i',output['path'],'-t','0.5',
+                         '-ac','1','-ar','8000','-f','f32le','-']).stdout
+                samples=array.array('f')
+                samples.frombytes(pcm)
+                self.assertGreater(len(samples),3000)
+                def magnitude(frequency):
+                    omega=2*math.pi*frequency/8000
+                    sine=sum(sample*math.sin(omega*i) for i,sample in enumerate(samples))
+                    cosine=sum(sample*math.cos(omega*i) for i,sample in enumerate(samples))
+                    return 2*math.hypot(sine,cosine)/len(samples)
+                self.assertGreater(magnitude(330),.01)
+                self.assertGreater(magnitude(700+10*int(task['script'].split()[-1])),.02)
+
     def test_uploaded_music_uses_its_duration_without_transcription(self):
         music=self.upload(self.audio,'music')
         b=self.app.editing.create(self.p['id'],self.w['id'],{'primary_music_id':music['id'],'rights_allowed':True})

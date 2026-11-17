@@ -1048,6 +1048,7 @@ class Workbench:
         self.workspace(p,w)
         if not hmac.compare_digest(sig,self.media_signature(p,w,kind,ident)):raise Problem('无效媒体签名',403)
         if kind=='edit':return self.editing.media(p,w,ident)
+        if kind=='narration':return self.generation.narration_media(w,ident)
         if kind=='gen':return self.generation.media(p,w,ident)
         if kind=='asset':return self.asset_path(w,ident)
         if kind=='export':

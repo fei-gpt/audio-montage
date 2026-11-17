@@ -3,6 +3,7 @@
 Every paid submission is checkpointed. Querying an accepted video never resubmits it.
 """
 import base64,json,os,re,shutil,subprocess,threading,time
+from datetime import datetime
 from pathlib import Path
 from montage import save,read,fingerprint,probe,portrait_geometry,media_duration,phrases,check_segments
 from workbench.backend import Problem,uid,now,REPO
@@ -11,9 +12,29 @@ FIELDS=('ai_copy','jimeng_prompt','continuation_copy','visual_requirements','lan
 SCHEMA={'type':'object','properties':{k:{'type':'string'} for k in FIELDS},'required':list(FIELDS),'additionalProperties':False}
 
 
+def narration_name(item, used_names):
+    def words(text):
+        return re.findall(r'[^\W_]+',text)
+
+    stamp=datetime.fromisoformat(item['created_at']).strftime('%m-%d_%H-%M')
+    # Unspaced Chinese copy uses a short opening excerpt.
+    opening=words(item['script'])[:2] or ['文案']
+    excerpt=opening[0][:6] if re.search(r'[\u3400-\u9fff]',opening[0]) else '-'.join(word[:20] for word in opening)
+    voice=next(iter(words(item['voice_name'])),'音色')[:12]
+    stem=f'{stamp}_{excerpt}_{voice}'
+    name=stem+'.mp3'
+    if name.casefold() in used_names:
+        name=f"{stem}_{item['id'][:8]}.mp3"
+    return name
+
+
 class Generation:
     def __init__(self,app):
         self.app=app;self.store=app.store;self.timers={};self.closed=False
+        for item in self.store.all('narration'):
+            if item['status'] in {'queued','running'}:
+                item.update(status='failed',error='服务已重启。再次提交相同文案和音色时会先核对请求缓存。')
+                self.store.put('narration',item['workspace_id'],item)
         for g in self.store.all('generation'):
             if g['status'] in {'queued','running'}:
                 g.update(status='interrupted',stage='服务重启，请继续；已提交视频只查询原任务')
@@ -72,17 +93,88 @@ class Generation:
             file=self.app.root/'credentials.json';values=read(file) if file.exists() else {};values['ELEVENLABS_API_KEY']=key;save(file,values);file.chmod(0o600)
         save(self.app.root/'generation-config.json',cfg);return self.status()
 
+    def elevenlabs_key(self):
+        file=self.app.root/'credentials.json';values=read(file) if file.exists() else {}
+        return values.get('ELEVENLABS_API_KEY') or os.environ.get('ELEVENLABS_API_KEY')
+
     def voices(self):
         import urllib.request
         from elevenlabs_adapter import NoRedirect
-        file=self.app.root/'credentials.json';values=read(file) if file.exists() else {}
-        key=values.get('ELEVENLABS_API_KEY') or os.environ.get('ELEVENLABS_API_KEY')
+        key=self.elevenlabs_key()
         if not key:raise Problem('请先保存ElevenLabs密钥')
         req=urllib.request.Request('https://api.elevenlabs.io/v1/voices',headers={'xi-api-key':key})
         try:
             with urllib.request.build_opener(NoRedirect).open(req,timeout=30) as r:data=json.load(r)
         except Exception:raise Problem('获取声音失败，请检查密钥权限和网络；未发送配音请求') from None
         return {'voices':[{'id':v['voice_id'],'name':v.get('name',v['voice_id'])} for v in data.get('voices',[])[:1000]]}
+
+    def create_narrations(self,p,w,body):
+        if not self.app.workspace(p,w)['assigned']:raise Problem('请先分配账号')
+        scripts=body.get('scripts')
+        voice=body.get('voice_id')
+        if not isinstance(scripts,list) or not 1<=len(scripts)<=20 or any(
+                not isinstance(text,str) or not 1<=len(text.strip())<=5000 for text in scripts):
+            raise Problem('每批可生成 1–20 条配音，每条文案须为 1–5000 字符')
+        if not isinstance(voice,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',voice):
+            raise Problem('请选择有效音色')
+        if body.get('allow_paid') is not True:raise Problem('请确认允许生成配音并可能计费')
+        if not self.elevenlabs_key():raise Problem('请先保存ElevenLabs密钥')
+        model=self.config()['tts_model']
+        if not model:raise Problem('请先设置 ElevenLabs 模型')
+        items=[]
+        with self.app.lock:
+            if any(x['status'] in {'queued','running'} for x in self.store.all('narration',w)):
+                raise Problem('当前账号已有配音正在生成',409)
+            for text in scripts:
+                items.append(self.store.put('narration',w,{
+                    'product_id':p,'workspace_id':w,'script':text.strip(),'voice_id':voice,
+                    'voice_name':str(body.get('voice_name') or voice)[:200],
+                    'model':model,'status':'queued','created_at':now()}))
+            if self.app.pool:self.app.pool.submit(self.run_narrations,p,w,items)
+        return {'ids':[item['id'] for item in items]}
+
+    def run_narrations(self,p,w,items):
+        from io import BytesIO
+        from elevenlabs_adapter import request,aligned_words
+        used_names={row['name'].casefold() for row in self.store.all('narration',w) if row.get('name')}
+        for item in items:
+            item['status']='running'
+            self.store.put('narration',w,item)
+            try:
+                result,_=request(self.app.wroot(w)/'narration-requests',
+                    'text-to-speech/'+item['voice_id']+'/with-timestamps',
+                    {'text':item['script'],'model_id':item['model']},None,True,
+                    api_key_value=self.elevenlabs_key())
+                audio=base64.b64decode(result['audio_base64'],validate=True)
+                name=narration_name(item,used_names)
+                upload=self.app.editing.upload(p,w,name,'narration',BytesIO(audio),len(audio))
+                segments=None
+                try:
+                    language='zh' if re.search(r'[\u3400-\u9fff]',item['script']) else 'auto'
+                    words=aligned_words(result,'tts',language)
+                    if words:
+                        segments=phrases([{'start':words[0]['start'],'end':words[-1]['end'],
+                            'text':''.join(word['text'] for word in words),'words':words}],language=language)
+                    check_segments(segments,upload['duration'])
+                except (ValueError,KeyError,TypeError,AttributeError,IndexError):
+                    segments=None
+                if segments:
+                    save(Path(upload['path']).with_suffix('.timing.json'),{
+                        'segments':segments,'audio_sha256':upload['sha256'],'source':'elevenlabs_timestamps'})
+                upload.update(script=item['script'],generated_narration=True)
+                self.store.put('edit_upload',w,upload)
+                item.update(status='completed',upload_id=upload['id'],name=name,duration=upload['duration'])
+                used_names.add(name.casefold())
+            except Exception as exc:
+                item.update(status='failed',error=str(exc) if type(exc) in {ValueError,Problem} else '配音处理失败，请检查服务响应或本地音频。')
+            self.store.put('narration',w,item)
+
+    def narration_media(self,w,ident):
+        upload=self.store.get('edit_upload',ident,w)
+        path=Path(upload['path']).resolve()
+        if not upload.get('generated_narration') or not path.is_relative_to(self.app.wroot(w)/'editing-uploads') or not path.is_file():
+            raise Problem('配音文件不可用',404)
+        return path
 
     def get(self,p,w,gid):self.app.workspace(p,w);return self.store.get('generation',gid,w)
     def folder(self,g):return self.app.wroot(g['workspace_id'])/'generation'/g['id']
@@ -196,8 +288,7 @@ class Generation:
         from elevenlabs_adapter import request,aligned_words
         folder=self.folder(g);audio=folder/'continuation.mp3';timing_file=folder/'continuation-timing.json'
         if not timing_file.exists():
-            secrets=read(self.app.root/'credentials.json') if (self.app.root/'credentials.json').exists() else {}
-            key=secrets.get('ELEVENLABS_API_KEY') or os.environ.get('ELEVENLABS_API_KEY')
+            key=self.elevenlabs_key()
             if not key:raise ValueError('请配置ElevenLabs密钥')
             from urllib.parse import quote
             result,digest=request(folder,'text-to-speech/'+quote(voice,safe='')+'/with-timestamps',

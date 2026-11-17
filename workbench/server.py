@@ -30,7 +30,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self,method):
         try:
             self.guard();url=urllib.parse.urlsplit(self.path);path=url.path
-            media=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/media/(asset|export|edit|gen)/([a-f0-9-]+)',path)
+            media=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/media/(asset|export|edit|gen|narration)/([a-f0-9-]+)',path)
             if media and method=='GET':
                 p,w,k,ident=media.groups();sig=urllib.parse.parse_qs(url.query).get('sig',[''])[0];return self.serve_file(self.app.media(p,w,k,ident,sig))
             if not path.startswith('/api/'):
@@ -91,6 +91,16 @@ class Handler(BaseHTTPRequestHandler):
                         })
                     w['background_music_history']=list(music_history.values())
                     w['editing_batches']=app.editing.list(p['id'],w['id'])
+                    exported_audio={task['audio'] for batch in w['editing_batches'] for task in batch['tasks']
+                                     if task.get('audio')
+                                     and task['status']=='completed' and task.get('output')}
+                    w['narrations']=s.all('narration',w['id'])
+                    used_uploads={upload['id'] for upload in s.all('edit_upload',w['id'])
+                                  if upload['path'] in exported_audio} if exported_audio and w['narrations'] else set()
+                    for item in w['narrations']:
+                        if item.get('upload_id'):
+                            item['used']=item['upload_id'] in used_uploads
+                            item['media_url']=self.media_url(p['id'],w['id'],'narration',item['upload_id'])
                     w['generations']=s.all('generation',w['id'])
                     for g in w['generations']:
                         if g.get('intro'):g['intro']['media_url']=self.media_url(p['id'],w['id'],'gen',g['id'])
@@ -142,7 +152,9 @@ class Handler(BaseHTTPRequestHandler):
         m=re.fullmatch(r'workspaces/([a-f0-9]+)(?:/(.*))?',tail or '')
         if not m:raise Problem('接口不存在',404)
         w,rest=m.groups();ws=app.workspace(p,w)
+        if rest=='editing/narration-request/inspect' and method=='POST':return app.editing.inspect_narration_request(p,w,b)
         if rest=='editing/pairs/inspect' and method=='POST':return app.editing.inspect_pairs(p,w,b)
+        if rest=='narrations' and method=='POST':return app.generation.create_narrations(p,w,b)
         if rest=='generation' and method=='POST':return app.generation.create(p,w,b)
         gen=re.fullmatch(r'generation/([a-f0-9]{32})(?:/([a-z-]+))?',rest or '')
         if gen:

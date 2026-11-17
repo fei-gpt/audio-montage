@@ -167,6 +167,12 @@ class Editing:
         reference_only=bool(body.get('reference_id')) and narrations==[]
         if not isinstance(narrations,list) or (not narrations and not reference_only and not primary_music) or len(narrations)>100:raise Problem('请上传配音、音乐或参考视频')
         uploads=[self.store.get('edit_upload',x['id'],w) for x in narrations]
+        for n,u in zip(narrations,uploads):
+            supplement=n.get('request','')
+            if not isinstance(supplement,str) or len(supplement)>10000 or (supplement.strip() and not u.get('generated_narration')):
+                raise Problem('单条补充要求仅用于已生成配音，最多 10000 字')
+        individual_rules=any(u.get('generated_narration') for u in uploads) and (
+            len(uploads)>1 or any(n.get('request','').strip() for n in narrations))
         if any(u['kind']!='narration' for u in uploads):raise Problem('配音文件类型无效')
         if any(len(str(n.get('script',''))) >100000 for n in narrations):raise Problem('整段文案过长')
         clips=[]
@@ -231,13 +237,14 @@ class Editing:
             from workbench.product_template import signature
             if template.get('confirmed') and template.get('source_signature')==signature(product):
                 batch['reference_template']=template['definition']
-        if matching_mode=='duration' and batch['rules']['request'].strip():
+        if matching_mode=='duration' and batch['rules']['request'].strip() and not individual_rules:
             requests=parse_shot_requests(batch['rules']['request'],self.app.product(p),(target or (primary_music or uploads[0])['duration']))
             batch['rules']['shot_requests']=requests
             required_cuts=sorted(set(required_cuts)|{r['frame'] for r in requests if r['frame'] is not None})
         if required_cuts:batch['rules']['required_cut_frames']=required_cuts
         if variants>1:
             batch['variant_count']=variants
+        if variants>1 or len(uploads)>1 and any(u.get('generated_narration') for u in uploads):
             batch['rules']['distinct_variant_sources']=True
         inputs=[]
         if primary_music:
@@ -250,9 +257,10 @@ class Editing:
             from workbench.reference import silent_clock
             inputs.append(dict(name=reference['name'],stage='等待按参考分镜匹配素材'))
         for n,u in zip(narrations,uploads):
-            script=str(n.get('script','')).strip()
+            script=str(u.get('script',n.get('script',''))).strip()
             if len(script)>100000:raise Problem('整段文案过长')
-            inputs.append(dict(name=u['name'],audio=u['path'],audio_sha256=u['sha256'],
+            individual={'individual_request':n.get('request','').strip()} if individual_rules else {}
+            inputs.append(dict(name=u['name'],audio=u['path'],audio_sha256=u['sha256'],**individual,
                                audio_duration=u['duration'],**({'target_duration':target} if target is not None else {}),script=script,stage='等待识别配音时间轴与规划'))
         for input_task in inputs:
             for variant in range(1,variants+1):
@@ -369,7 +377,8 @@ class Editing:
             else:sha=None
             if not sha and not b['rules'].get('timing_confirmed'):raise ValueError('已有字幕未绑定音频指纹，请确认同名字幕对应当前音频后创建批次')
             segments=timing(source)
-            data={'segments':segments,'source':'import','timing_file_sha256':fingerprint(source),'human_reviewed':False}
+            origin='elevenlabs_timestamps' if sha and isinstance(data,dict) and data.get('source')=='elevenlabs_timestamps' else 'import'
+            data={'segments':segments,'source':origin,'timing_file_sha256':fingerprint(source),'human_reviewed':False}
         else:
             from workbench import local_asr
             bundled_python,default_model=local_asr.runtime()
@@ -529,7 +538,58 @@ class Editing:
         return (batch.get('variant_count',1)>1 or 'pairing_report' in batch
                 or batch['rules'].get('distinct_variant_sources',False))
 
+    def task_batch(self,b,t):
+        if 'individual_request' not in t or b.get('_task_rules_resolved'):return b
+        rules=dict(b['rules'])
+        rules['request']='\n'.join(text for text in (rules['request'],t['individual_request']) if text.strip())
+        if rules['matching_mode']=='duration':
+            product=self.app.product(t['product_id'])
+            duration=t.get('target_duration',t['audio_duration'])
+            scoped_lines=[]
+            global_rules=[]
+            for line in re.split(r'[\n；;。]+',rules['request']):
+                match=re.fullmatch(r'全片\s*(?:排除|不使用)\s*(.+)',line.strip())
+                if match:
+                    category_text=re.sub(r'[、，,]', '+',match[1])
+                    rule=parse_shot_requests('第一镜必须用'+category_text,product,duration)[0]
+                    global_rules.append({'text':line.strip(),'labels':[],'excluded':rule['labels']})
+                else:
+                    scoped_lines.append(line)
+            requests=parse_shot_requests('\n'.join(scoped_lines),product,duration)
+            global_excluded=set(rules.get('excluded_shot_categories',[]))
+            for rule in global_rules:global_excluded.update(rule['excluded'])
+            if global_excluded:rules['excluded_shot_categories']=sorted(global_excluded)
+            rules['global_shot_requests']=global_rules
+            groups={}
+            for rule in requests:
+                if not rule['preferred']:
+                    groups.setdefault((rule['ordinal'],rule['last'],rule['frame']),[]).append(rule)
+            for group in groups.values():
+                exact=[set(rule['labels']) for rule in group if rule['only']]
+                required=set().union(*(set(rule['labels']) for rule in group if not rule['only']))
+                excluded=global_excluded.union(*(set(rule['excluded']) for rule in group))
+                if (required & excluded or exact and
+                        (not set.intersection(*exact)-excluded or not required<=set.intersection(*exact))):
+                    raise Problem('同一镜头的剪辑要求冲突：'+' / '.join(rule['text'] for rule in group+global_rules))
+            rules['shot_requests']=requests
+            rules['required_cut_frames']=sorted(set(rules.get('required_cut_frames',[]))|
+                                               {rule['frame'] for rule in requests if rule['frame'] is not None})
+        return dict(b,rules=rules,_task_rules_resolved=True)
+
+    def inspect_narration_request(self,p,w,body):
+        self.app.workspace(p,w)
+        upload=self.store.get('edit_upload',body.get('id'),w)
+        request=body.get('request','')
+        common=body.get('common','')
+        if not upload.get('generated_narration') or any(not isinstance(text,str) or len(text)>10000
+                                                         for text in (request,common)):
+            raise Problem('请选择已生成配音并填写有效的剪辑要求')
+        batch=self.task_batch({'rules':{'matching_mode':'duration','request':common}},
+                              {'product_id':p,'audio_duration':upload['duration'],'individual_request':request})
+        return {'requirements':batch['rules']['shot_requests']+batch['rules']['global_shot_requests']}
+
     def validate_plan(self,b,t,plan,available=None):
+        b=self.task_batch(b,t)
         minimum=self.minimum_shot_frames(t['workspace_id'])
         strict_clock=bool(b['rules'].get('reference_evidence') and b['rules'].get('reference_only'))
         if not isinstance(plan,dict) or not isinstance(plan.get('parts'),list) or not plan['parts']:raise ValueError('缺少匹配的画面，请补充已确认素材')
@@ -689,6 +749,7 @@ class Editing:
             part.setdefault('zoom',rng.choice(choices))
 
     def plan(self,b,t,allow_paid,*,prepared_timeline=None,batch_counts=None):
+        b=self.task_batch(b,t)
         self.check_inputs(b,t)
         if t.get('plan'):
             t['plan'].update(self.validate_plan(b,t,t['plan']));return t
@@ -1205,7 +1266,7 @@ class Editing:
         for variant in range(1,variants+1):
             tid=uid()
             task={key:source[key] for key in ('name','audio','audio_sha256','audio_duration','target_duration','intro',
-                                             'intro_sha256','intro_duration','script') if key in source}
+                                             'intro_sha256','intro_duration','script','individual_request') if key in source}
             task.update(id=tid,batch_id=bid,product_id=p,workspace_id=w,created_at=now(),status='queued',
                         stage='沿用原要求，等待重新选片',operation='plan',regenerated_from=source['id'],
                         revision_root=source.get('revision_root',source['id']))
