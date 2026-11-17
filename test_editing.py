@@ -123,7 +123,7 @@ class EditingTest(unittest.TestCase):
         self.app.store.put('shot',self.w['id'],dict(self.shot,id='other',asset_id=a['id'],asset_sha256=a['sha256'],end=1,facts='四把合体旋转变色',visual_details={'light_sword':{'arrangement':'connected_four'}}))
         music=self.upload(self.audio,'music')
         b=self.app.editing.create(self.p['id'],self.w['id'],{
-            'primary_music_id':music['id'],'rights_allowed':True,'required_cuts':'00:00:01:00'})
+            'primary_music_id':music['id'],'rights_allowed':True,'request':'第一镜必须用单把光剑旋转；00:00:01:00 必须用四个光剑旋转'})
         self.op(b,'plan')
         t=self.task(b)
         self.assertEqual(t['status'],'planned',t.get('error'))

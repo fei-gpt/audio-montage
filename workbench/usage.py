@@ -16,13 +16,30 @@ def sources(store, task):
     return result
 
 
+def task_ranges(store, task):
+    ranges={}
+    for part in task.get('plan',{}).get('parts',[]):
+        interval=[round(part['start']*30),round(part['start']*30)+part['frames']]
+        ranges.setdefault(part['asset_sha256'],[]).append(interval)
+    batch=store.get('edit_batch',task['batch_id'],task['workspace_id'])
+    for sha in [task.get('intro_sha256'),*(c['sha256'] for c in batch.get('clips',[]))]:
+        if sha:ranges[sha]=None
+    return ranges
+
+
+def overlapping_uses(entries, interval):
+    return sum(interval is None or not entry.get('ranges') or any(
+        start<interval[1] and interval[0]<end for start,end in entry['ranges'])
+        for entry in entries)
+
+
 def ledger(store, extra_paths=()):
     events = {}
     for task in store.all('edit_task'):
         if not task.get('output'):
             continue
-        for sha in sources(store, task):
-            events.setdefault(sha, {})[task['id']] = {'task_id': task['id'], 'batch_id': task['batch_id']}
+        for sha,ranges in task_ranges(store,task).items():
+            events.setdefault(sha,{})[task['id']]={'task_id':task['id'],'batch_id':task['batch_id'],'ranges':ranges}
     # Sidecars travel with footage; copying/renaming the same bytes cannot reset usage.
     paths = {(a['path'], a['sha256']) for a in store.all('asset')} | set(extra_paths)
     for path, sha in paths:
@@ -35,7 +52,8 @@ def ledger(store, extra_paths=()):
         entries = data.get('references')
         if not isinstance(entries, list) or any(not isinstance(e, dict) or not isinstance(e.get('task_id'), str) for e in entries):
             raise ValueError('引用记录格式无效，请核对：' + str(doc))
-        events.setdefault(sha, {}).update({e['task_id']: e for e in entries})
+        for entry in entries:
+            events.setdefault(sha,{}).setdefault(entry['task_id'],entry)
     for folder in {Path(path).parent for path,sha in paths}:
         index=folder/'素材引用次数索引.json'
         if not index.exists():continue
@@ -44,7 +62,8 @@ def ledger(store, extra_paths=()):
         for sha,item in data.get('素材',{}).items():
             entries=item.get('references',[])
             if not isinstance(entries,list) or any(not isinstance(e,dict) or not isinstance(e.get('task_id'),str) for e in entries):raise ValueError('素材引用索引记录无效')
-            events.setdefault(sha,{}).update({e['task_id']:e for e in entries})
+            for entry in entries:
+                events.setdefault(sha,{}).setdefault(entry['task_id'],entry)
     return events
 
 
@@ -58,12 +77,13 @@ def check(store, task, batch):
         if other['id'] == task['id'] or other.get('output'):
             continue
         if other.get('dedup_reserved') and other.get('status') in {'running', 'queued'}:
-            for sha in sources(store, other):
-                occupied.setdefault(sha, set()).add(other['id'])
-    for sha in sources(store, task):
-        count = len(set(events.get(sha, {})) - {task['id']})
-        if count + len(occupied.get(sha, set())) >= LIMIT:
-            raise ValueError('素材已达到3次引用上限或剩余次数已被输出任务占用，请更换片段：' + sha[:12])
+            for sha,ranges in task_ranges(store,other).items():
+                occupied.setdefault(sha,[]).append({'ranges':ranges})
+    for sha,ranges in task_ranges(store,task).items():
+        entries=[e for tid,e in events.get(sha,{}).items() if tid!=task['id']]
+        entries.extend(occupied.get(sha,[]))
+        if any(overlapping_uses(entries,interval)>=LIMIT for interval in ranges or [None]):
+            raise ValueError('素材区间已达到3次引用上限或剩余次数已被输出任务占用，请更换片段：'+sha[:12])
 
 
 def sync(store, only_shas=None):

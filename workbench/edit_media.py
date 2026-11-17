@@ -14,10 +14,10 @@ def run(args):
 
 
 def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,check_cancel=lambda:None,
-           clips=(),music=None,music_volume=.15,output_name=None):
+           clips=(),music=None,music_volume=.15,output_name=None,target_duration=None):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=False)
     width,height=(360,640) if preview else (1080,1920)
-    body_frames=math.ceil(media_duration(probe(audio),'audio')*30-1e-7)
+    body_frames=math.ceil((target_duration or media_duration(probe(audio),'audio'))*30-1e-7)
     if sum(p['frames'] for p in parts)!=body_frames:raise ValueError('画面未覆盖完整配音时间轴')
     head=[c['path'] for c in clips if c['position']=='intro'];tail=[c['path'] for c in clips if c['position']=='outro']
     if intro:head.insert(0,str(intro))
@@ -26,7 +26,8 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
     for role,files in [('intro',head),('outro',tail)]:
         for path in files:
             pi=probe(path);portrait_geometry(pi);seconds=media_duration(pi,'video')
-            frames=math.ceil(seconds*30-1e-7)
+            # Match the fps filter's nearest-frame rounding at the end of the clip.
+            frames=math.floor(seconds*30+0.50002)
             if any(s['codec_type']=='audio' for s in pi['streams']):
                 audio_seconds=media_duration(pi,'audio')
                 excess=audio_seconds-frames/30
@@ -74,7 +75,7 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
              '-vf',f'fps=30,{spatial},setsar=1,setpts=PTS-STARTPTS','-frames:v',frames,
              '-c:v','libx264','-preset','fast','-pix_fmt','yuv420p',out])
         if int(next(s for s in probe(out)['streams'] if s['codec_type']=='video').get('nb_frames',0))!=frames:
-            raise ValueError('源画面不足所需帧数，不补帧')
+            raise ValueError(f'{Path(path).name} 转为 30 fps 后帧数与计划不符（需 {frames} 帧），未补帧')
         sound=folder/f'sound-{i:04}.wav';sounds.append(sound)
         has_sound=any(s['codec_type']=='audio' for s in pi['streams'])
         if part['role']!='body':bookend_audio|=has_sound

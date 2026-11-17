@@ -82,6 +82,14 @@ class Handler(BaseHTTPRequestHandler):
                 for w in p['workspaces']:
                     w.update(libraries=s.all('library',w['id']),assets=s.all('asset',w['id']),shots=s.all('shot',w['id']),jobs=s.all('job',w['id']),exports=s.all('export',w['id']))
                     w['assets']=app.visible_assets(w['id'])
+                    music_history={}
+                    for upload in reversed(s.all('edit_upload',w['id'])):
+                        if upload.get('kind')!='music' or not Path(upload['path']).is_file():
+                            continue
+                        music_history.setdefault(upload['sha256'], {
+                            key:upload[key] for key in ('id','name','duration')
+                        })
+                    w['background_music_history']=list(music_history.values())
                     w['editing_batches']=app.editing.list(p['id'],w['id'])
                     w['generations']=s.all('generation',w['id'])
                     for g in w['generations']:

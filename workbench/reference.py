@@ -260,7 +260,7 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
             if batch.get('variant_count',1)>1:
                 substitute=('优先满足 must_see。缺少完全对应的实拍时，可用同产品且展示目的相近的镜头，理由写明“替代表达”及具体差异，不声称看到了缺失的动作。'
                             '效果相近时优先选 variant_uses 较少的素材。明确禁止项和同源排除仍然适用。')
-            prompt=(MATCH_PROMPT+LIGHT_SWORD_MATCH+batch.get('editing_guidelines','')+'\n你是替代素材剪辑师。选择能够表达同一展示目的的其他实拍，不要求复制演员身份、'
+            prompt=(MATCH_PROMPT+LIGHT_SWORD_MATCH+'剪辑总纲必须遵守。本次要求只能补充；冲突时报告冲突。\n'+batch.get('editing_guidelines','')+'\n你是替代素材剪辑师。选择能够表达同一展示目的的其他实拍，不要求复制演员身份、'
                     '字幕原文、服装、墨镜、场地及颜色。模型不用计算时长，列表只含本机确认能用的区间。'
                     +substitute+'不能把常亮说成开灯，旋转主体与运镜要分开，手持不等于拆卸。'
                     '从全片考虑各段。参考中某一处的独特布景优先留给那一段，其他段选角度和场景有变化的实拍。'

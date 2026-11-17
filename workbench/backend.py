@@ -132,6 +132,7 @@ class Workbench:
             product['profile']=owner.get('profile',{})
             product['knowledge_product_id']=owner['id']
             product['knowledge_product_name']=owner['name']
+        product['sentence_editing_only']=owner['name'].casefold()=='meetokivivi'
         product['profile']={k:v for k,v in (product.get('profile') or {}).items()
                             if k not in {'claims','unknowns','conflicts'}}
         from workbench.product_template import baseline,signature
@@ -461,7 +462,7 @@ class Workbench:
             try:
                 file=Path(asset['path'])
                 if root and file.is_file() and root in file.resolve().parents:
-                    if library.get('category') and not asset.get('category_review',{}).get('confirmed'):
+                    if library.get('category') and not asset.get('replaced_source') and not asset.get('category_review',{}).get('confirmed'):
                         asset['category_review']={'labels':[library['category']],'status':'来自类别文件夹',
                                                   'evidence':library['name'],'confirmed':True}
                     visible.append(asset)
@@ -511,6 +512,8 @@ class Workbench:
                         info=probe(path);portrait_geometry(info)
                         v=next(x for x in info['streams'] if x['codec_type']=='video')
                         a={'id':old['id'] if old else uid(),'workspace_id':w,'library_id':lib['id'],'path':str(path),'name':path.name,'kind':lib['kind'],'sha256':hash_,'duration':media_duration(info,'video'),'width':v['width'],'height':v['height'],'available':True,'version':(old or {}).get('version',0)+1}
+                        if old and (old.get('replaced_source') or old['sha256']!=hash_):
+                            a['replaced_source']=True
                         if old and old['sha256']==hash_:a['active_standard_version']=old.get('active_standard_version')
                         found.append(self.store.put('asset',w,a))
                         if old:

@@ -52,7 +52,7 @@ def _batch_overlap_score(parts,history):
     return max(ratios,default=0),endings,sum(ratios)
 
 
-def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, accept=None, seed=None, ending_counts=None, batch_counts=None,free_selection=False,batch_history=(),required_cuts=(),preferred_cuts=(),shot_priority=None,min_frames=1,prefer_full_slots=False,shot_allowed=None):
+def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, accept=None, seed=None, ending_counts=None, batch_counts=None,free_selection=False,batch_history=(),required_cuts=(),preferred_cuts=(),shot_priority=None,min_frames=1,prefer_full_slots=False,shot_allowed=None,request_rank=None):
     rng=random.Random(seed)
     planned=batch_counts or {}
     usage_priority={
@@ -76,12 +76,13 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
     slot_starts=[0]+boundaries[:-1]
     budgets=[end-start for start,end in zip(slot_starts,boundaries)]
     nodes=0
+    node_limit=max_nodes
     def overlap(c,start,end,occupied):
         return any(c['asset_sha256']==x['asset_sha256'] and min(end,x['end'])-max(start,x['start'])>1e-6 for x in occupied)
     def search(index,remaining,parts,occupied):
         nonlocal nodes
+        if nodes>=node_limit:return None
         nodes+=1
-        if nodes>max_nodes:return None
         if index==len(budgets):return parts if accept is None or accept(parts) else None
         if remaining==0:return search(index+1,budgets[index+1] if index+1<len(budgets) else 0,parts,occupied)
         options=[]
@@ -105,9 +106,14 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
             for start,frames in set(choices):
                 if not min_frames<=frames<=remaining or 0<remaining-frames<min_frames:continue
                 end=start+frames/30
+                whole=abs(start-c['start'])<1e-6 and frames==c['frames']
+                if not whole and not any(start>=r['start']-1e-6 and end<=r['end']+1e-6
+                                         for r in c.get('safe_trim_ranges',[])):
+                    continue
                 if c.get('action_start') is not None and (start>c['action_start']+1e-6 or end<c['action_end']-1e-6):continue
                 if overlap(c,start,end,occupied):continue
                 part={'source_name':c.get('name',''),'shot_id':c['id'],'asset_sha256':c['asset_sha256'],'start':start,'end':end,'frames':frames,'reason':'从可用素材随机选取并匹配实际断句时长，不作语义匹配'}
+                if request_rank and request_rank(part,len(parts)+1,frame,frame+frames==total,parts) is None:continue
                 options.append(part)
         # Search all valid choices in random order, never filename/ID/length order.
         rng.shuffle(options)
@@ -123,11 +129,20 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
             options=[p for p in options if p['asset_sha256'] not in used_sources]
         if shot_priority:
             options.sort(key=lambda part:(shot_priority(part['shot_id'],frame,frame+part['frames']==total), prefer_full_slots and part['frames']!=remaining))
+        if request_rank:
+            options.sort(key=lambda part:request_rank(part,len(parts)+1,frame,frame+part['frames']==total,parts))
         for part in options:
+            if nodes>=node_limit:break
             result=search(index,remaining-part['frames'],parts+[part],occupied+[part])
             if result is not None:return result
         return None
-    result=search(0,budgets[0] if budgets else 0,[],list(used))
+    # Redistribute the bounded search when similar trim offsets stall one branch.
+    attempts=4 if request_rank and max_nodes>=4000 else 1
+    for attempt in range(1,attempts+1):
+        node_limit=max_nodes*attempt//attempts
+        result=search(0,budgets[0] if budgets else 0,[],list(used))
+        if result:break
+    node_limit=max_nodes
     if not result:
         if cuts:raise ValueError('现有素材无法同时满足必切时间点、时长和安全裁切要求，请核对切点或补充素材')
         raise ValueError('现有素材或安全裁切范围无法在搜索范围内匹配断句时长，请补充素材或确认安全裁切范围')
