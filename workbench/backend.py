@@ -45,6 +45,7 @@ class Problem(Exception):
 class Store:
     def __init__(self, root):
         self.root=Path(root).resolve(); self.root.mkdir(parents=True,exist_ok=True)
+        self.revision=uid()
         with self.db() as c:
             c.execute('PRAGMA journal_mode=WAL')
             c.execute('CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY, kind TEXT NOT NULL, scope TEXT NOT NULL, body TEXT NOT NULL)')
@@ -56,9 +57,23 @@ class Store:
             with connection:yield connection
         finally:connection.close()
     def put(self, kind, scope, obj):
-        obj=dict(obj); obj.setdefault('id',uid()); obj['updated_at']=now()
-        with self.db() as c: c.execute('INSERT OR REPLACE INTO objects VALUES(?,?,?,?)',(obj['id'],kind,scope,json.dumps(obj,ensure_ascii=False)))
-        return obj
+        return self.put_many(scope,[(kind,obj)])[0]
+    def put_many(self, scope, records):
+        return self.put_scoped((kind,scope,obj) for kind,obj in records)
+    def put_scoped(self, records):
+        saved=[]
+        rows=[]
+        for kind,scope,obj in records:
+            obj=dict(obj)
+            if 'id' not in obj:obj['id']=uid()
+            obj['updated_at']=now()
+            saved.append(obj)
+            rows.append((obj['id'],kind,scope,json.dumps(obj,ensure_ascii=False)))
+        if not rows:return saved
+        with self.db() as c:
+            c.executemany('INSERT OR REPLACE INTO objects VALUES(?,?,?,?)',rows)
+        self.revision=uid()
+        return saved
     def get(self, kind, ident, scope=None):
         with self.db() as c:
             row=c.execute('SELECT scope,body FROM objects WHERE kind=? AND id=?',(kind,ident)).fetchone()
@@ -68,6 +83,12 @@ class Store:
         with self.db() as c:
             rows=c.execute('SELECT body FROM objects WHERE kind=?'+(' AND scope=?' if scope is not None else ''),(kind,scope) if scope is not None else (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
+
+    def batch_tasks(self,workspace,batch_id):
+        with self.db() as c:
+            rows=c.execute("SELECT body FROM objects WHERE kind='edit_task' AND scope=? AND json_extract(body,'$.batch_id')=?",
+                           (workspace,batch_id)).fetchall()
+        return [json.loads(row[0]) for row in rows]
 
 class PageText(HTMLParser):
     def __init__(self): super().__init__(); self.skip=0; self.parts=[]
@@ -113,6 +134,7 @@ class Workbench:
 
     def __init__(self, root, executor=True):
         self.store=Store(root); self.root=self.store.root; self.secret=secrets.token_bytes(32); self.lock=threading.RLock()
+        self.repair_legacy_snapshots()
         self.pool=ThreadPoolExecutor(max_workers=1) if executor else None
         for j in self.store.all('job'):
             if j['status'] in {'running','queued'}:
@@ -132,11 +154,17 @@ class Workbench:
             product['profile']=owner.get('profile',{})
             product['knowledge_product_id']=owner['id']
             product['knowledge_product_name']=owner['name']
-        product['sentence_editing_only']=owner['name'].casefold()=='meetokivivi'
+        product['sentence_editing_only']=bool(owner.get('sentence_editing_only') or owner['name'].casefold()=='meetokivivi')
         product['profile']={k:v for k,v in (product.get('profile') or {}).items()
                             if k not in {'claims','unknowns','conflicts'}}
         from workbench.product_template import baseline,signature
         template=product.get('recognition_template')
+        if template and template.get('builtin'):template=None
+        # Older metadata saves could persist a resolved copy of the owner's template.
+        inherited=product.pop('recognition_template_origin',None)
+        if inherited and template and owner['id']!=p and not any(
+                t['id']==template['id'] for t in self.store.all('product_template',p)):
+            template=None
         template_product=product
         if not template and owner['id']!=p:
             shared=owner.get('recognition_template')
@@ -149,12 +177,27 @@ class Workbench:
         product['recognition_template_ready']=bool(template and template.get('confirmed')
                                                    and template.get('source_signature')==signature(template_product))
         from product_display import LIGHT_SWORD_CATEGORIES,LIGHT_SWORD_CUT,uses_light_sword_categories
-        is_light_sword=uses_light_sword_categories(product)
+        is_light_sword=uses_light_sword_categories(owner) or uses_light_sword_categories(product)
+        product['light_sword_product']=is_light_sword
         product['editing_guidelines']=owner.get('editing_guidelines',LIGHT_SWORD_CUT.strip() if is_light_sword else '')
         if is_light_sword:
             product['shot_categories']=owner.get('shot_categories') or list(LIGHT_SWORD_CATEGORIES)
             product['shot_category_aliases']=owner.get('shot_category_aliases',{})
         return product
+
+    def update_product(self,p,changes):
+        with self.lock:
+            obj=self.store.get('product',p,'root')
+            if 'name' in changes:
+                name=str(changes['name']).strip()
+                if not 1<=len(name)<=100:raise Problem('请填写1–100字产品名称')
+                current=self.product(p)
+                if current['sentence_editing_only']:obj['sentence_editing_only']=True
+                if current['light_sword_product']:obj['light_sword_product']=True
+                obj['name']=name
+            if 'extra_request' in changes:obj['extra_request']=str(changes['extra_request']).strip()[:10000]
+            self.store.put('product','root',obj)
+            return self.product(p)
 
     def rename_shot_category(self,p,old,new):
         if not isinstance(new,str) or not 1<=len(new.strip())<=40:raise Problem('类别名称应为1–40字')
@@ -174,16 +217,18 @@ class Workbench:
             self.store.put('product','root',obj)
             return {'categories':obj['shot_categories']}
 
-    def confirm_asset_category(self,p,w,aid,labels,confirmed=True):
-        product=self.product(p)
+    def confirm_asset_category(self,p,w,aid,labels,confirmed=True,*,expected_sha=None):
         self.workspace(p,w)
         if isinstance(labels,str):labels=[labels]
-        if not isinstance(labels,list) or not labels or any(not isinstance(label,str) or label not in product.get('shot_categories',[]) for label in labels):
-            raise Problem('请选择已有类别')
-        labels=list(dict.fromkeys(labels))
         with self.lock:
-            self.asset_path(w,aid)
+            product=self.product(p)
+            if not isinstance(labels,list) or not labels or any(not isinstance(label,str) or label not in product.get('shot_categories',[]) for label in labels):
+                raise Problem('请选择已有类别')
+            labels=list(dict.fromkeys(labels))
             a=self.store.get('asset',aid,w)
+            if (expected_sha is not None or a.get('replaced_source')) and expected_sha!=a['sha256']:
+                raise Problem('素材版本已变化，请刷新后重新填写类别',409)
+            self.asset_path(w,aid)
             a['user_category']={'labels':labels,'status':'已确认类别' if confirmed else '已修改，待确认',
                                 'confirmed':confirmed}
             self.store.put('asset',w,a)
@@ -199,7 +244,30 @@ class Workbench:
         with self.lock:
             obj=self.store.get('product',product.get('knowledge_product_id',p),'root')
             obj['shot_categories']=categories
-            self.store.put('product','root',obj)
+            aliases=obj.get('shot_category_aliases',{})
+            reused={old:new for old,new in aliases.items() if old in categories}
+            changes=[]
+            if reused:
+                # Free the old name for new assignments without relabelling earlier confirmations.
+                shared={row['id'] for row in self.store.all('product','root')
+                        if self.product(row['id']).get('knowledge_product_id',row['id'])==obj['id']}
+                for ws in self.store.all('workspace'):
+                    if ws['product_id'] not in shared:continue
+                    w=ws['id']
+                    for library in self.store.all('library',w):
+                        if library.get('category') in reused:
+                            changes.append(('library',w,dict(library,category=reused[library['category']])))
+                    for asset in self.store.all('asset',w):
+                        changed=False
+                        for field in ('user_category','category_review'):
+                            record=asset.get(field) or {}
+                            labels=record.get('labels',[])
+                            if any(label in reused for label in labels):
+                                record['labels']=list(dict.fromkeys(reused.get(label,label) for label in labels))
+                                changed=True
+                        if changed:changes.append(('asset',w,asset))
+                obj['shot_category_aliases']={key:value for key,value in aliases.items() if key not in reused}
+            self.store.put_scoped([*changes,('product','root',obj)])
         return {'categories':categories}
 
     def save_editing_guidelines(self,p,value):
@@ -313,6 +381,7 @@ class Workbench:
         with self.lock:
             prepared=[]
             bundles={}
+            local_sources=self.store.all('source',p)
             for selection in selections:
                 if not isinstance(selection,dict):raise Problem('资料引用格式无效')
                 origin=self.product(selection.get('product_id'))
@@ -323,7 +392,7 @@ class Workbench:
                 if source.get('status')=='failed' or source.get('kind') not in {'pdf','image','link'}:
                     raise Problem('所选资料尚不可用')
                 origin_id=source.get('reference',{}).get('source_id',source['id'])
-                existing=next((s for s in self.store.all('source',p) if s['id']==origin_id or s.get('reference',{}).get('source_id')==origin_id),None)
+                existing=next((s for s in local_sources if s['id']==origin_id or s.get('reference',{}).get('source_id')==origin_id),None)
                 if origin['id']==p:existing=source
                 if existing:prepared.append((existing,False));continue
                 item=copy.deepcopy(source)
@@ -337,11 +406,12 @@ class Workbench:
                 expected={s['id'] for s in self.store.all('source',origin['id']) if s.get('status')=='understood'}
                 selected={s.get('source_id') for s in selections if s.get('product_id')==origin['id']}
                 if not expected.issubset(selected):raise Problem('请引用完整的已理解资料包，避免把整体理解错误归到单份文件')
-            added=[]
+            added=[];changes=[]
             for item,create in prepared:
                 duplicate=next((s for s in added if s.get('reference')==item.get('reference') and item.get('reference')),None)
                 if duplicate:continue
-                added.append(self.store.put('source',p,item) if create else item)
+                added.append(item)
+                if create:changes.append(('source',p,item))
             from workbench.knowledge import merge_profiles,remap_profile
             profiles=[]
             for origin in bundles.values():
@@ -351,11 +421,12 @@ class Workbench:
                     local=next((s for s in added if s['id']==source['id'] or s.get('reference',{}).get('source_id')==original),None)
                     if local:mapping[source['id']]=local['id']
                 profiles.append(remap_profile(origin['profile'],mapping))
-            target=self.product(p)
-            target['profile']=merge_profiles([target.get('profile',{})]+profiles)
+            product=self.product(p)
+            target=self.store.get('product',product.get('knowledge_product_id',p),'root')
+            target['profile']=merge_profiles([product.get('profile',{})]+profiles)
             target['profile']['understood_at']=now()
             target['profile']['reuse_note']='直接复用已保存语料，未重新读取原文件或调用API'
-            self.store.put('product','root',target)
+            self.store.put_scoped([*changes,('product','root',target)])
             return {'sources':added,'count':len(added)}
 
     def reference_knowledge(self,p,product_ids):
@@ -367,19 +438,22 @@ class Workbench:
         return {'count':len(results)}
 
     def store_knowledge(self,p,name,profile,origin_id):
-        origin=self.product(origin_id)
-        owner_id=origin.get('knowledge_product_id',origin_id)
-        target=self.store.get('product',p,'root')
-        if owner_id==p:return {'id':p,'kind':'knowledge','status':'understood'}
         if not profile.get('understood_at'):raise Problem('没有可复用的产品知识')
-        if target.get('profile') and not target.get('knowledge_product_id') and not any(s.get('kind')=='knowledge' for s in self.store.all('source',p)):
-            raise Problem('当前产品已有独立语料，不能直接覆盖；同一产品的账号可直接共用当前资料')
         with self.lock:
+            origin=self.product(origin_id)
+            owner_id=origin.get('knowledge_product_id',origin_id)
+            if owner_id==p:return {'id':p,'kind':'knowledge','status':'understood'}
+            target=self.store.get('product',p,'root')
+            if target.get('profile') and not target.get('knowledge_product_id') and not any(s.get('kind')=='knowledge' for s in self.store.all('source',p)):
+                raise Problem('当前产品已有独立语料，不能直接覆盖；同一产品的账号可直接共用当前资料')
             target.update(knowledge_product_id=owner_id,profile={})
-            self.store.put('product','root',target)
             existing=next((s for s in self.store.all('source',p) if s.get('kind')=='knowledge' and s.get('knowledge_origin')==owner_id),None)
-            return existing or self.store.put('source',p,{'name':name+' · 共用产品知识','kind':'knowledge','status':'understood',
-                'pages':[],'knowledge_origin':owner_id,'reference':{'product_id':owner_id,'product_name':name},'note':'关联同一份产品知识，无副本、无API调用'})
+            if existing:
+                self.store.put('product','root',target)
+                return existing
+            source={'name':name+' · 共用产品知识','kind':'knowledge','status':'understood',
+                'pages':[],'knowledge_origin':owner_id,'reference':{'product_id':owner_id,'product_name':name},'note':'关联同一份产品知识，无副本、无API调用'}
+            return self.store.put_scoped([('product','root',target),('source',p,source)])[1]
 
 
     def generate_template(self,p,allow_paid):
@@ -452,13 +526,15 @@ class Workbench:
             for a in self.store.all('asset'):
                 if a['workspace_id']!=w and root in Path(a['path']).resolve().parents:raise Problem('目录内已有素材属于另一账号',409)
             return self.store.put('library',w,{'path':str(root),'workspace_id':w,'kind':kind,'name':root.name,**({'category':category} if category else {})})
-    def visible_assets(self,w):
-        libraries={lib['id']:lib for lib in self.store.all('library',w)}
+    def visible_assets(self,w,*,libraries=None):
+        if libraries is None:libraries=self.store.all('library',w)
+        roots={lib['id']:Path(lib['path']).resolve() for lib in libraries}
+        libraries={lib['id']:lib for lib in libraries}
         visible=[]
         for asset in self.store.all('asset',w):
             if not asset.get('available'):continue
             library=libraries.get(asset.get('library_id'))
-            root=Path(library['path']).resolve() if library else None
+            root=roots.get(asset.get('library_id'))
             try:
                 file=Path(asset['path'])
                 if root and file.is_file() and root in file.resolve().parents:
@@ -472,8 +548,9 @@ class Workbench:
     def asset_path(self,w,asset,check_hash=True):
         a=self.store.get('asset',asset,w);lib=self.store.get('library',a['library_id'],w)
         path=Path(a['path']);resolved=path.resolve();root=Path(lib['path'])
-        if root not in resolved.parents or not path.is_file():raise Problem('原文件已失效或路径越出素材库，请刷新扫描',409)
-        if check_hash and digest(path)!=a['sha256']:raise Problem('原文件已变化，请重新扫描和识别',409)
+        if a.get('available') is False or root not in resolved.parents or not path.is_file():
+            raise Problem('原文件已失效或路径越出素材库，请刷新扫描',409)
+        if check_hash and digest(path)!=a['sha256']:raise Problem('原文件已变化，请到素材处理重新扫描并核对新版本',409)
         return path
     def select_standard_version(self,p,w,asset_id,body):
         self.workspace(p,w)
@@ -494,41 +571,68 @@ class Workbench:
 
     def scan(self,p,w):
         self.workspace(p,w);from montage import probe,portrait_geometry,media_duration
-        libs=self.store.all('library',w);found=[];errors=[]
+        found=[];errors=[]
         with self.lock:
-            for lib in libs:
+            catalog={}
+            foreign_paths=set()
+            foreign_files=set()
+            for asset in self.store.all('asset'):
+                file=Path(asset['path'])
+                if asset['workspace_id']==w:
+                    catalog[file]=asset
+                    continue
+                foreign_paths.add(file)
+                try:
+                    foreign_paths.add(file.resolve())
+                    stat=file.stat()
+                    if stat.st_ino:foreign_files.add((stat.st_dev,stat.st_ino))
+                except OSError:pass
+            shots_by_asset=None
+            for lib in self.store.all('library',w):
                 root=Path(lib['path']);seen=set()
                 if not root.is_dir():errors.append({'library':lib['name'],'error':'文件夹失效'})
                 for path in sorted(root.rglob('*')) if root.is_dir() else []:
                     if path.suffix.lower() not in VIDEO_EXT or not path.is_file():continue
                     resolved=path.resolve()
                     if root not in resolved.parents:errors.append({'file':str(path),'error':'跳过指向库外的符号链接'});continue
-                    seen.add(str(path));old=next((a for a in self.store.all('asset',w) if a['path']==str(path)),None)
+                    seen.add(path);old=catalog.get(path)
                     try:
-                        if any(a['workspace_id']!=w and (Path(a['path']).resolve()==resolved or same_location(Path(a['path']),resolved)) for a in self.store.all('asset')):raise Problem('文件已属于另一账号')
+                        stat=path.stat()
+                        if resolved in foreign_paths or (stat.st_dev,stat.st_ino) in foreign_files:raise Problem('文件已属于另一账号')
                         hash_=digest(path)
-                        if old and old['sha256']==hash_ and old.get('available'):
+                        if old and old['sha256']==hash_ and old.get('available') and old['path']==str(path):
                             found.append(old);continue
-                        info=probe(path);portrait_geometry(info)
-                        v=next(x for x in info['streams'] if x['codec_type']=='video')
-                        a={'id':old['id'] if old else uid(),'workspace_id':w,'library_id':lib['id'],'path':str(path),'name':path.name,'kind':lib['kind'],'sha256':hash_,'duration':media_duration(info,'video'),'width':v['width'],'height':v['height'],'available':True,'version':(old or {}).get('version',0)+1}
-                        if old and (old.get('replaced_source') or old['sha256']!=hash_):
-                            a['replaced_source']=True
-                        if old and old['sha256']==hash_:a['active_standard_version']=old.get('active_standard_version')
-                        found.append(self.store.put('asset',w,a))
+                        if old and old['sha256']==hash_:
+                            a=dict(old,available=True,path=str(path),name=path.name)
+                        else:
+                            info=probe(path);portrait_geometry(info)
+                            v=next(x for x in info['streams'] if x['codec_type']=='video')
+                            a={'id':old['id'] if old else uid(),'workspace_id':w,'library_id':lib['id'],'path':str(path),'name':path.name,'kind':lib['kind'],'sha256':hash_,'duration':media_duration(info,'video'),'width':v['width'],'height':v['height'],'available':True,'version':(old or {}).get('version',0)+1}
+                            if old:
+                                a['replaced_source']=True
+                                a['previous_hashes']=sorted((set(old.get('previous_hashes',[]))|{old['sha256']})-{hash_})
                         if old:
-                            for s in self.store.all('shot',w):
-                                if s['asset_id']==old['id']:s['stale']=True;self.store.put('shot',w,s)
+                            if shots_by_asset is None:
+                                shots_by_asset={}
+                                for shot in self.store.all('shot',w):shots_by_asset.setdefault(shot['asset_id'],[]).append(shot)
+                            for s in shots_by_asset.get(old['id'],[]):
+                                if not s.get('stale') and s.get('asset_sha256')!=hash_:
+                                    s['stale']=True;self.store.put('shot',w,s)
+                        catalog[path]=self.store.put('asset',w,a)
+                        found.append(catalog[path])
                     except Exception as exc:
                         errors.append({'file':str(path),'error':str(exc)[:500]})
-                        if old:old['available']=False;self.store.put('asset',w,old)
-                for a in self.store.all('asset',w):
-                    if a['library_id']==lib['id'] and a['path'] not in seen:a['available']=False;self.store.put('asset',w,a)
+                        if old and old['available']:
+                            old['available']=False;catalog[path]=self.store.put('asset',w,old)
+                for file,a in catalog.items():
+                    if a['available'] and a['library_id']==lib['id'] and file not in seen:
+                        a['available']=False;self.store.put('asset',w,a)
             # Independent registry; never merge by content hash across accounts.
             index=self.wroot(w)/'index.sqlite'
             with closing(sqlite3.connect(index)) as c, c:
                 c.execute('CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY, sha256 TEXT, path TEXT, kind TEXT, available INTEGER)')
-                for a in self.store.all('asset',w):c.execute('INSERT OR REPLACE INTO media VALUES(?,?,?,?,?)',(a['id'],a['sha256'],a['path'],a['kind'],int(a['available'])))
+                c.executemany('INSERT OR REPLACE INTO media VALUES(?,?,?,?,?)',
+                              ((a['id'],a['sha256'],a['path'],a['kind'],int(a['available'])) for a in catalog.values()))
         return {'assets':found,'errors':errors,'count':len(found)}
     def create_job(self,p,w,kind,allow_paid=False,extra='',rights=False,asset_ids=None,provider=None,model=None,analysis_mode=None,force=False):
         if kind=='organize' and not self.asset_recognition_enabled:raise Problem('素材机器识别已暂停',409)
@@ -571,8 +675,12 @@ class Workbench:
         if not ready:j.update(status='requires_configuration',stage='缺少Codex CLI配置' if provider=='codex' else '缺少识别配置：'+ '；'.join(self.status()['missing']))
         elif not j['allow_paid']:j.update(status='requires_consent',stage='需要明确允许本次向已配置模型发送资料并可能计费')
         self.store.put('job',scope,j)
-        if j['status']=='queued' and self.pool:self.pool.submit(self.run_job,j['id'],scope)
+        if j['status']=='queued':self.dispatch_job(j)
         return j
+    def dispatch_job(self,j):
+        if self.pool:
+            try:self.pool.submit(self.run_job,j['id'],j['scope'])
+            except RuntimeError:self.job_update(j,status='interrupted',stage='执行队列暂不可用，可继续原任务',error='本次任务尚未启动')
     def resume(self,p,w,jid,allow_paid,retry_failed=False,continue_on_error=None,asset_ids=None):
         scope=w or p;j=self.store.get('job',jid,scope)
         if j['product_id']!=p:raise Problem('任务不属于当前产品',404)
@@ -592,7 +700,7 @@ class Workbench:
         if continue_on_error is not None:j['continue_on_error']=continue_on_error is True
         (self.root/'pause-requests'/(jid+'.json')).unlink(missing_ok=True)
         j.update(status='queued',stage='继续已保存进度',allow_paid=True,retry_failed=retry_failed is True,error='');self.store.put('job',scope,j)
-        if self.pool:self.pool.submit(self.run_job,jid,scope)
+        self.dispatch_job(j)
         return j
     def job_update(self,j,**updates): j.update(updates);self.store.put('job',j['scope'],j)
     def understand(self,p,allow_paid):
@@ -627,9 +735,20 @@ class Workbench:
         profile={k:v for k,v in profile.items() if k not in {'claims','unknowns','conflicts'}}
         for key in ['appearance','demonstrations','references']:
             if not isinstance(profile.get(key),list):raise Problem('产品理解缺少字段 '+key)
+        source_ids={s['id'] for s in usable}
+        for reference in profile['references']:
+            ident=reference.get('source_id',reference.get('id')) if isinstance(reference,dict) else reference
+            if not isinstance(ident,str) or ident not in source_ids:
+                raise Problem('产品理解引用了本次输入之外的资料，请核对来源')
         profile['sources']=[{'id':s['id'],'name':s['name'],'url':s.get('url'),'sha256':s.get('sha256')} for s in usable]
-        profile['understood_at']=now();product=self.product(p);merged=merge_profiles([product.get('profile',{}),profile]);merged['understood_at']=now();self.save_product_profile(p,merged)
-        for s in usable:s['status']='understood';self.store.put('source',p,s)
+        with self.lock:
+            profile['understood_at']=now()
+            product=self.product(p)
+            owner=self.store.get('product',product.get('knowledge_product_id',p),'root')
+            owner['profile']=merge_profiles([product.get('profile',{}),profile])
+            owner['profile']['understood_at']=profile['understood_at']
+            changes=[('source',p,dict(s,status='understood')) for s in usable]
+            self.store.put_scoped([('product','root',owner),*changes])
         return profile
     def run_job(self,jid,scope):
         j=self.store.get('job',jid,scope)
@@ -1004,25 +1123,37 @@ class Workbench:
             if not 1<=s['end']-s['start']<=4:
                 from content_recognition import single_take_exception
                 if not single_take_exception(t,s):raise Problem('时长越界且未核实一镜到底完整展示例外',409)
-        eid=uid();folder=self.wroot(w)/'exports'/eid;folder.mkdir(parents=True)
+        eid=uid();root=self.wroot(w)/'exports';folder=root/eid;folder.mkdir(parents=True,exist_ok=False)
+        try:
+            manifest=self.export_shots(w,rows,folder)
+            return self.store.put('export',w,{'id':eid,'workspace_id':w,'product_id':p,'files':manifest,'created_at':now()})
+        except Exception:
+            if folder.resolve()==folder and folder.parent==root:
+                shutil.rmtree(folder)
+            raise
+
+    def export_shots(self,w,rows,folder):
         manifest=[]
         from montage import probe,portrait_geometry,media_duration
         for i,s in enumerate(rows):
-            src=self.asset_path(w,s['asset_id']);portrait_geometry(probe(src));out=folder/f'{i+1:03}.mp4'
+            src=self.asset_path(w,s['asset_id'],check_hash=False)
+            if digest(src)!=s['asset_sha256']:raise Problem('原片版本与已审核镜头不一致，请重新扫描核对',409)
+            info=probe(src);portrait_geometry(info);out=folder/f'{i+1:03}.mp4'
             frame_data=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_frames','-show_entries','frame=best_effort_timestamp_time','-of','json',str(src)]))
             times=[float(x['best_effort_timestamp_time']) for x in frame_data['frames'] if 'best_effort_timestamp_time' in x]
             if not times:raise Problem('无法读取实际帧边界')
-            times.append(media_duration(probe(src),'video'))
+            times.append(media_duration(info,'video'))
             ai=min(range(len(times)),key=lambda k:abs(times[k]-s['start']));bi=min(range(len(times)),key=lambda k:abs(times[k]-s['end']))
             if ai>=bi:raise Problem('选区没有有效视频帧')
             filters=f'[0:v:0]trim=start_frame={ai}:end_frame={bi},setpts=PTS-STARTPTS[v]'
-            audio=any(x['codec_type']=='audio' for x in probe(src)['streams'])
+            audio=any(x['codec_type']=='audio' for x in info['streams'])
             if audio:filters+=f';[0:a:0]atrim=start={times[ai]}:end={times[bi]},asetpts=PTS-STARTPTS[a]'
             cmd=['ffmpeg','-v','error','-nostdin','-y','-i',str(src),'-filter_complex',filters,'-map','[v]']
             if audio:cmd+=['-map','[a]','-c:a','aac']
             subprocess.run(cmd+['-c:v','libx264','-pix_fmt','yuv420p',str(out)],check=True,capture_output=True,timeout=300)
-            portrait_geometry(probe(out));subprocess.run(['ffmpeg','-v','error','-nostdin','-i',str(out),'-f','null','-'],check=True,capture_output=True,timeout=300)
-            if abs(media_duration(probe(out),'video')-(s['end']-s['start']))>.15:raise Problem('导出时长不符')
+            checked=probe(out);portrait_geometry(checked);subprocess.run(['ffmpeg','-v','error','-nostdin','-i',str(out),'-f','null','-'],check=True,capture_output=True,timeout=300)
+            if abs(media_duration(checked,'video')-(s['end']-s['start']))>.15:raise Problem('导出时长不符')
+            if digest(src)!=s['asset_sha256']:raise Problem('导出期间原片已变化，请重新扫描核对',409)
             from video_document import write_document
             clip=dict(s,start=0,end=times[bi]-times[ai])
             # Source-relative temporal observations stay explicitly tied to the source range.
@@ -1033,16 +1164,60 @@ class Workbench:
                                        'observation':s},
                                clip={'start':clip['start'],'end':clip['end'],'facts':s.get('facts','')})
             manifest.append({'shot_id':s['id'],'path':str(out),'json_path':str(doc),'sha256':digest(out),'start':s['start'],'end':s['end']})
-        return self.store.put('export',w,{'id':eid,'workspace_id':w,'product_id':p,'files':manifest,'created_at':now()})
+        return manifest
+    @staticmethod
+    def legacy_workspaces(data):
+        products=data.get('products')
+        if not isinstance(products,list) or not products:raise Problem('迁移文件缺少产品列表')
+        for rows in (products,data.get('tasks',[]),data.get('exports',[])):
+            if not isinstance(rows,list) or any(not isinstance(row,dict) for row in rows):
+                raise Problem('旧版产品、任务或导出记录格式无效')
+        snapshots=[{'sources':p.get('sources',[]),'shots':p.get('shots',[]),'tasks':[],'exports':[]} for p in products]
+        owners={}
+        def register(index,key,owner):
+            if isinstance(key,(str,int)) and key!='':
+                index[key]=owner if key not in index or index[key]==owner else None
+        for i,p in enumerate(products):register(owners,p.get('id'),i)
+        task_owners={}
+        for kind in ('tasks','exports'):
+            for row in data.get(kind,[]):
+                product_id=row.get('productId',row.get('product_id'))
+                task_id=row.get('taskId',row.get('task_id'))
+                if isinstance(product_id,(str,int)):owner=owners.get(product_id)
+                elif kind=='exports' and isinstance(task_id,(str,int)) and task_id in task_owners:owner=task_owners[task_id]
+                else:owner=0 if len(products)==1 else None
+                if kind=='tasks':register(task_owners,row.get('id'),owner)
+                if owner is not None:snapshots[owner][kind].append(row)
+        return snapshots
+
+    def repair_legacy_snapshots(self):
+        for record in self.store.all('migration','root'):
+            if record.get('scoped_snapshots') or not record.get('snapshot',{}).get('products'):continue
+            try:snapshots=self.legacy_workspaces(record['snapshot'])
+            except Problem:continue
+            changes=[]
+            for pid,snapshot in zip(record.get('products',[]),snapshots):
+                for ws in self.store.all('workspace',pid):
+                    if 'legacy_snapshot' in ws:
+                        changes.append(('workspace',pid,dict(ws,legacy_snapshot=snapshot)))
+            self.store.put_scoped([*changes,('migration','root',dict(record,scoped_snapshots=True))])
+
     def migrate(self,data):
         raw=json.dumps(data,sort_keys=True,ensure_ascii=False);key=hashlib.sha256(raw.encode()).hexdigest()
-        existing=self.store.all('migration','root')
-        if any(x['fingerprint']==key for x in existing):return {'already_imported':True}
-        made=[]
-        for old in data.get('products',[]):
-            p=self.create_product(old.get('name') or '旧产品');p['extra_request']=str(old.get('request',''));p['legacy_snapshot']=old;self.store.put('product','root',p)
-            w=self.create_workspace(p['id'],'待分配账号',False);w['legacy_snapshot']={'sources':old.get('sources',[]),'shots':old.get('shots',[]),'tasks':[t for t in data.get('tasks',[]) if t.get('productId')==old.get('id')],'exports':data.get('exports',[])};self.store.put('workspace',p['id'],w);made.append(p['id'])
-        self.store.put('migration','root',{'fingerprint':key,'snapshot':data,'products':made,'created_at':now()});return {'products':made,'already_imported':False}
+        with self.lock:
+            if any(x['fingerprint']==key for x in self.store.all('migration','root')):
+                return {'already_imported':True}
+            snapshots=self.legacy_workspaces(data)
+            made=[];records=[]
+            for old,snapshot in zip(data['products'],snapshots):
+                name=str(old.get('name') or '旧产品').strip()
+                if not 1<=len(name)<=100:raise Problem('旧版产品名称应为1–100字')
+                pid=uid();made.append(pid)
+                records.append(('product','root',{'id':pid,'name':name,'profile':{},'extra_request':str(old.get('request','')),'legacy_snapshot':old}))
+                records.append(('workspace',pid,{'name':'待分配账号','product_id':pid,'assigned':False,'legacy_snapshot':snapshot}))
+            records.append(('migration','root',{'fingerprint':key,'snapshot':data,'products':made,'created_at':now(),'scoped_snapshots':True}))
+            self.store.put_scoped(records)
+            return {'products':made,'already_imported':False}
     def media_signature(self,p,w,kind,ident):return hmac.new(self.secret,f'{p}:{w}:{kind}:{ident}'.encode(),hashlib.sha256).hexdigest()
     def media(self,p,w,kind,ident,sig):
         self.workspace(p,w)
@@ -1052,7 +1227,8 @@ class Workbench:
         if kind=='gen':return self.generation.media(p,w,ident)
         if kind=='asset':return self.asset_path(w,ident)
         if kind=='export':
-            record_id,index=ident.rsplit('-',1);e=self.store.get('export',record_id,w);path=Path(e['files'][int(index)]['path']).resolve()
-            if self.wroot(w) not in path.parents or not path.is_file():raise Problem('导出文件不可用',404)
+            record_id,index=ident.rsplit('-',1);e=self.store.get('export',record_id,w);item=e['files'][int(index)];path=Path(item['path']).resolve()
+            if self.wroot(w) not in path.parents or not path.is_file() or (item.get('sha256') and digest(path)!=item['sha256']):
+                raise Problem('导出文件不可用或已变化',404)
             return path
         raise Problem('媒体类型无效',404)

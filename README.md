@@ -371,3 +371,33 @@ Runtime，也不会产生生成费用。
 自动解析要求、提出候选并密集复核。密集复核可在**已观察窗口内**修正候选边界，
 原区间写入 `original_start`/`boundary_history`；标 keep 前会逐项核对用户硬条件，
 未知结果进待审而不是等到导出才整批失败。配置、费用开关和能力边界见 [VISION_API.md](VISION_API.md)。
+
+## 在新电脑安装即梦画布 CLI 与 Skill
+
+从即梦官方入口安装。按使用的终端选择对应命令。
+
+**macOS / Linux**
+
+```bash
+curl -fsSL https://jimeng.jianying.com/canvas-cli/install.sh | bash
+```
+
+**Windows PowerShell**
+
+```powershell
+irm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex
+```
+
+**Windows CMD**
+
+```bat
+curl.exe -fsSLO https://jimeng.jianying.com/canvas-cli/install.bat && install.bat
+```
+
+安装后重开终端和 Agent，执行 `dreamina-canvas --format json version` 和
+`dreamina-canvas auth status`。需要登录时执行 `dreamina-canvas auth login`，
+在浏览器完成授权，再执行 `dreamina-canvas canvas ls` 验证能读取画布。
+
+工作台默认的「Seedance 2.5 样片」使用 `dreamina-canvas`。选择时长和比例，
+上传参考图片或音频并确认积分报价后，打开即梦画布查看样片。旧版 AI 开头任务
+继续使用各自保存的 `dreamina` 路径。

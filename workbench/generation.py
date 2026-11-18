@@ -3,6 +3,7 @@
 Every paid submission is checkpointed. Querying an accepted video never resubmits it.
 """
 import base64,json,os,re,shutil,subprocess,threading,time
+from uuid import uuid4
 from datetime import datetime
 from pathlib import Path
 from montage import save,read,fingerprint,probe,portrait_geometry,media_duration,phrases,check_segments
@@ -28,6 +29,19 @@ def narration_name(item, used_names):
     return name
 
 
+def narration_segments(result,language,duration):
+    from elevenlabs_adapter import aligned_words
+    try:
+        words=aligned_words(result,'tts',language)
+        if not words:return None
+        segments=phrases([{'start':words[0]['start'],'end':words[-1]['end'],
+                          'text':''.join(word['text'] for word in words),'words':words}],language=language)
+        check_segments(segments,duration)
+        return segments
+    except (ValueError,KeyError,TypeError,AttributeError,IndexError):
+        return None
+
+
 class Generation:
     def __init__(self,app):
         self.app=app;self.store=app.store;self.timers={};self.closed=False
@@ -48,16 +62,20 @@ class Generation:
             self.timers.clear()
 
     def schedule(self,g):
-        if not self.app.pool or self.closed:return
         delay=max(30,min(300,g.get('estimated_remaining_seconds') or 60))
         def follow():
             with self.app.lock:
-                if self.closed:return
+                if self.closed or self.timers.get(g['id']) is not timer:return
+                del self.timers[g['id']]
                 current=self.get(g['product_id'],g['workspace_id'],g['id'])
                 if current['status']!='video_pending':return
-                current.update(status='queued',operation='poll',stage='自动查询原即梦任务，不重新提交');self.put(current)
-                self.app.pool.submit(self.run,g['product_id'],g['workspace_id'],g['id'],'poll',False)
+                try:self.action(g['product_id'],g['workspace_id'],g['id'],'poll',{})
+                except Problem as error:
+                    if error.status!=503:raise
+                    current.update(status='interrupted',stage='自动查询暂时中断，可继续查询原任务',error=str(error))
+                    self.put(current)
         with self.app.lock:
+            if not self.app.pool or self.closed:return
             if g['id'] in self.timers:self.timers[g['id']].cancel()
             timer=threading.Timer(delay,follow);timer.daemon=True;self.timers[g['id']]=timer;timer.start()
 
@@ -121,21 +139,24 @@ class Generation:
         if not self.elevenlabs_key():raise Problem('请先保存ElevenLabs密钥')
         model=self.config()['tts_model']
         if not model:raise Problem('请先设置 ElevenLabs 模型')
-        items=[]
         with self.app.lock:
             if any(x['status'] in {'queued','running'} for x in self.store.all('narration',w)):
                 raise Problem('当前账号已有配音正在生成',409)
-            for text in scripts:
-                items.append(self.store.put('narration',w,{
-                    'product_id':p,'workspace_id':w,'script':text.strip(),'voice_id':voice,
-                    'voice_name':str(body.get('voice_name') or voice)[:200],
-                    'model':model,'status':'queued','created_at':now()}))
-            if self.app.pool:self.app.pool.submit(self.run_narrations,p,w,items)
+            items=self.store.put_many(w,[('narration',{
+                'product_id':p,'workspace_id':w,'script':text.strip(),'voice_id':voice,
+                'voice_name':str(body.get('voice_name') or voice)[:200],
+                'model':model,'status':'queued','created_at':now()}) for text in scripts])
+            if self.app.pool:
+                try:self.app.pool.submit(self.run_narrations,p,w,items)
+                except RuntimeError as exc:
+                    message='配音执行队列暂不可用，本批尚未发送，可重新提交。'
+                    self.store.put_many(w,[('narration',dict(item,status='failed',error=message)) for item in items])
+                    raise Problem(message,503) from exc
         return {'ids':[item['id'] for item in items]}
 
     def run_narrations(self,p,w,items):
         from io import BytesIO
-        from elevenlabs_adapter import request,aligned_words
+        from elevenlabs_adapter import request
         used_names={row['name'].casefold() for row in self.store.all('narration',w) if row.get('name')}
         for item in items:
             item['status']='running'
@@ -148,16 +169,8 @@ class Generation:
                 audio=base64.b64decode(result['audio_base64'],validate=True)
                 name=narration_name(item,used_names)
                 upload=self.app.editing.upload(p,w,name,'narration',BytesIO(audio),len(audio))
-                segments=None
-                try:
-                    language='zh' if re.search(r'[\u3400-\u9fff]',item['script']) else 'auto'
-                    words=aligned_words(result,'tts',language)
-                    if words:
-                        segments=phrases([{'start':words[0]['start'],'end':words[-1]['end'],
-                            'text':''.join(word['text'] for word in words),'words':words}],language=language)
-                    check_segments(segments,upload['duration'])
-                except (ValueError,KeyError,TypeError,AttributeError,IndexError):
-                    segments=None
+                language='zh' if re.search(r'[\u3400-\u9fff]',item['script']) else 'auto'
+                segments=narration_segments(result,language,upload['duration'])
                 if segments:
                     save(Path(upload['path']).with_suffix('.timing.json'),{
                         'segments':segments,'audio_sha256':upload['sha256'],'source':'elevenlabs_timestamps'})
@@ -183,15 +196,106 @@ class Generation:
     def create(self,p,w,body):
         if not self.app.workspace(p,w)['assigned']:raise Problem('请先选择已分配账号')
         provider=body.get('provider','codex');brief=str(body.get('brief','')).strip();language=body.get('language','en')
+        sample=body.get('sample') is True
+        manuscript=body.get('manuscript','')
+        if not isinstance(manuscript,str) or len(manuscript)>20000:raise Problem('文稿最多 20000 字')
+        manuscript=manuscript.strip()
+        if sample and not manuscript:raise Problem('请填写样片文稿')
         if self.app.config().get('provider')=='codex' and provider!='codex':raise Problem('后续文案使用Codex GPT-6-Luna，不调用DeepSeek')
-        if provider not in {'deepseek','codex'} or not brief or len(brief)>20000 or language not in {'en','es','zh'}:raise Problem('请填写生成要求，选择文案服务及语言')
+        if provider not in {'deepseek','codex'} or not (sample or brief or manuscript) or len(brief)>20000 or language not in {'en','es','zh'}:raise Problem('请填写生成要求，选择文案服务及语言')
         if body.get('rights_allowed') is not True:raise Problem('请确认产品知识与账号素材的使用范围')
         mode=body.get('mode','preview')
         if mode not in {'preview','direct'}:raise Problem('输出方式无效')
-        cfg=self.config();g={'id':uid(),'product_id':p,'workspace_id':w,'provider':provider,'brief':brief,
+        cfg=self.config()
+        for key in ('duration','video_resolution','jimeng_model'):
+            if key in body:cfg[key]=body[key]
+        video_mode=body.get('video_mode','image' if body.get('first_frame') is not None else 'text')
+        ratio=body.get('ratio','9:16')
+        if sample:
+            if video_mode!='multimodal' or ratio not in ('21:9','16:9','4:3','1:1','3:4','9:16'):
+                raise Problem('请选择全能参考样片支持的画面比例')
+            if len(brief)+len(manuscript)>14999:raise Problem('样片提示词和文稿合计最多 14999 字')
+            cfg.update(jimeng_model='seedance_2.5_draft',video_resolution='480p')
+        model=cfg['jimeng_model']
+        advanced=model in ('seedance2.5','seedance_2.5_draft')
+        if not isinstance(model,str) or len(model)>100 or model and not re.fullmatch(r'[A-Za-z0-9_.-]+',model):
+            raise Problem('即梦模型无效')
+        if type(cfg['duration']) is not int or not 4<=cfg['duration']<=(30 if advanced else 15):
+            raise Problem('请选择该模型支持的开头时长')
+        resolutions={'seedance_2.5_draft':{'480p'},'seedance2.5':{'480p','720p','1080p'},'seedance2.0_vip':{'720p','1080p','4k'}}
+        if not isinstance(cfg['video_resolution'],str) or cfg['video_resolution'] not in resolutions.get(model or ('seedance2.0_vip' if video_mode in ('image','multimodal') else ''),{'720p'}):
+            raise Problem('请选择该模型支持的分辨率')
+        g={'id':uid(),'product_id':p,'workspace_id':w,'provider':provider,'brief':brief or manuscript[:80] or 'Seedance 2.5 全能参考样片','manuscript':manuscript,
             'language':language,'mode':mode,'status':'draft','stage':'等待生成两层文案与即梦开头',
             'created_at':now(),'product_profile':self.app.product(p).get('profile',{}),'settings':cfg}
-        self.folder(g).mkdir(parents=True);return self.put(g)
+        if sample:g.update(sample=True,ratio=ratio,prompt='\n'.join(text for text in (brief,manuscript) if text),stage='等待创建即梦样片与报价')
+        folder=self.folder(g)
+        image=body.get('first_frame')
+        refs=body.get('references',[])
+        mode=video_mode
+        if mode not in ('text','image','multimodal') or not isinstance(refs,list):
+            raise Problem('视频生成模式或参考素材无效')
+        if (mode=='image')!=(image is not None) or (mode=='multimodal')!=bool(refs):
+            raise Problem('请为所选生成模式提供对应素材')
+        g['video_mode']=mode
+        if mode=='multimodal':
+            limits={'image':30,'video':10,'audio':10} if advanced else {'image':9,'video':3,'audio':3}
+            max_refs=50 if advanced else 12
+            if len(refs)>max_refs or any(not isinstance(ref,dict) or ref.get('kind') not in tuple(limits) for ref in refs):
+                raise Problem('参考素材数量或类型超出所选模型限制')
+            counts={kind:sum(ref['kind']==kind for ref in refs) for kind in limits}
+            if sample and counts['video']:raise Problem('新建样片只支持参考图片和音频')
+            if any(counts[kind]>limit for kind,limit in limits.items()):
+                raise Problem('参考图片、视频或音频数量超出所选模型限制')
+            if not advanced and not (counts['image'] or counts['video']):
+                raise Problem('此模型至少需要一张参考图片或一段参考视频')
+            if sum(len(ref['base64']) for ref in refs if isinstance(ref.get('base64'),str))>40_000_100:
+                raise Problem('参考素材合计最多 30 MB')
+        folder.mkdir(parents=True)
+        try:
+            if image is not None:
+                g['first_frame']=self.save_visual_reference(folder,image,'image','first-frame',portrait=True)
+            if refs:
+                items=[self.save_visual_reference(folder,ref,ref['kind'],f'reference-{i}')
+                       for i,ref in enumerate(refs,1)]
+                if sum(item['size'] for item in items)>30_000_000:raise Problem('参考素材合计最多 30 MB')
+                max_duration=30 if advanced else 15
+                for kind in ('video','audio'):
+                    durations=[item['duration'] for item in items if item['kind']==kind]
+                    if any(d<2 for d in durations) or sum(durations)>max_duration+.001:
+                        raise Problem(f'每段参考{("视频" if kind=="video" else "音频")}至少 2 秒，同类合计最多 {max_duration} 秒')
+                g['references']=items
+        except Exception:
+            for path in folder.iterdir():path.unlink()
+            folder.rmdir()
+            raise
+        return self.put(g)
+
+    @staticmethod
+    def save_visual_reference(folder,asset,kind,stem,*,portrait=False):
+        if not isinstance(asset,dict) or not isinstance(asset.get('base64'),str):
+            raise Problem('参考素材编码无效')
+        try:raw=base64.b64decode(asset['base64'],validate=True)
+        except ValueError:raise Problem('参考素材编码无效') from None
+        name=Path(str(asset.get('name','')).replace('\\','/')).name[:200]
+        suffix=Path(name).suffix.lower()
+        if kind=='image':
+            suffix=('.png' if raw.startswith(b'\x89PNG\r\n\x1a\n') else '.jpg' if raw.startswith(b'\xff\xd8\xff')
+                    else '.webp' if raw.startswith(b'RIFF') and raw[8:12]==b'WEBP' else '')
+            if not suffix or len(raw)>10_000_000:raise Problem('参考图片须为 PNG、JPEG 或 WebP，每张最大 10 MB')
+        elif suffix not in ({'.mp4','.mov'} if kind=='video' else {'.mp3','.wav','.m4a'}):
+            raise Problem('参考视频支持 MP4、MOV，参考音频支持 MP3、WAV、M4A')
+        path=folder/(stem+suffix)
+        path.write_bytes(raw)
+        try:
+            info=probe(path)
+            stream=next(s for s in info['streams'] if s['codec_type']==('video' if kind=='image' else kind))
+            if portrait and stream['width']*16!=stream['height']*9:raise ValueError('首帧必须为 9:16 竖图')
+            duration=media_duration(info,kind) if kind!='image' else None
+        except Exception:
+            raise Problem('请上传可读取的 9:16 首帧图片' if portrait else '参考素材无法读入：'+name) from None
+        return {'name':name or path.name,'file':path.name,'sha256':fingerprint(path),'kind':kind,
+                'size':len(raw),'duration':duration}
 
     def command(self,argv,folder,stdin=None,timeout=120):
         env=os.environ.copy()
@@ -223,8 +327,9 @@ class Generation:
             '这是一条前半段AI视频+后半段实拍续接的产品短视频。输出两个衔接层次：ai_copy为AI开头口播，jimeng_prompt为即梦生成提示词，'
             '包含画面、人物表演与ai_copy原文，要求9:16、自带人声、无字幕无屏幕文字；continuation_copy为实拍续接的完整配音稿，'
             '只能延续开头，不能重复开场；visual_requirements为实拍画面要求；language为指定语言。只使用提供的产品事实，不把宣传主张写成实测。'
+            '若提供用户文稿，以它为文案来源，保留原有产品表达；生成要求可指定如何分配开头和续接。'
             'AI开头时长由输入duration指定，口播需适合该时长，不能承诺未证实能力。字段都必须为非空字符串，严格JSON返回。\n'+
-            json.dumps({'brief':g['brief'],'product':g['product_profile'],'language':g['language'],'duration':g['settings']['duration']},ensure_ascii=False))
+            json.dumps({'brief':g['brief'],'manuscript':g.get('manuscript',''),'reference_materials':[{'name':ref['name'],'kind':ref['kind']} for ref in g.get('references',[])],'product':g['product_profile'],'language':g['language'],'duration':g['settings']['duration']},ensure_ascii=False))
         if not paid:raise ValueError('文案调用需要明确费用授权')
         if g['provider']=='deepseek':
             from vision_api import call
@@ -240,20 +345,123 @@ class Generation:
         validated(result)
         save(dest,result);return result
 
+    def canvas_command(self,g,*args):
+        binary=shutil.which('dreamina-canvas') or (
+            Path.home()/'bin'/'dreamina-canvas.exe' if os.name=='nt' else 'dreamina-canvas')
+        result=self.parse_cli(self.command([binary,'--format','json','--non-interactive',*args],self.folder(g)))
+        if result.get('ok') is not True:
+            raise ValueError('即梦画布未确认操作结果，请检查登录及原画布任务')
+        return result['data']
+
+    def canvas_sample(self,g,operation):
+        folder=self.folder(g)
+        if operation=='poll':
+            if not g.get('submit_id'):raise ValueError('尚无可查询的样片提交 ID')
+            status=self.canvas_command(g,'operation','status',g['submit_id'],'--project-id',g['sample_canvas_id'])
+            resources=status.get('resources',[])
+            state=str(status.get('state','')).lower()
+            if state in {'failed','canceled','cancelled','rejected'} or any(
+                    str(item.get('state','')).lower() in {'failed','canceled','cancelled'} for item in resources):
+                raise ValueError('即梦样片生成失败，请在原画布查看详情')
+            if resources and all(str(item.get('state','')).lower() in {'success','succeeded'} for item in resources):
+                g.update(status='sample_ready',stage='样片已生成，可打开即梦画布查看')
+            else:
+                g.update(status='video_pending',stage='即梦样片生成中，仅查询原提交')
+            return g
+
+        if operation=='approve-sample':
+            ceiling=g['sample_approved_credits']
+            selection=['--project-id',g['sample_canvas_id'],'--node-id',g['sample_node_id']]
+            current=self.canvas_command(g,'node','quote',*selection)
+            if type(current.get('totalMaxCredits')) is not int or current['totalMaxCredits']<0:
+                raise ValueError('无法核对样片最新报价')
+            if current['totalMaxCredits']>ceiling:
+                g.update(sample_credits=current['totalMaxCredits'],status='awaiting_sample_approval',
+                         stage='样片报价已变化，请核对新报价')
+                return g
+            token=None
+            if current.get('confirmationRequired') or current['totalMaxCredits']>0:
+                token=self.canvas_command(g,'node','confirm',*selection,'--credit-ceiling',str(ceiling)).get('creditConfirmationToken')
+                if not token:raise ValueError('没有取得样片积分批准回执')
+            g['submit_id']=str(uuid4())
+            self.put(g)
+            args=['node','run',*selection,'--submit-id',g['submit_id']]
+            if token:args+=['--credit-token',token]
+            self.canvas_command(g,*args)
+            return self.canvas_sample(g,'poll')
+
+        if not g.get('sample_canvas_id'):
+            g['sample_canvas_id']=str(uuid4())
+            self.put(g)
+        project=g['sample_canvas_id']
+        if not g.get('sample_canvas_url'):
+            canvas=self.canvas_command(g,'canvas','create','工作台样片 '+g['id'][:8],'--project-id',project)['project']
+            if canvas.get('projectId')!=project:raise ValueError('即梦返回的画布 ID 与任务不符')
+            from urllib.parse import urlparse
+            url=urlparse(canvas.get('webUrl',''))
+            if url.scheme!='https' or url.hostname!='jimeng.jianying.com':
+                raise ValueError('即梦没有返回可验证的画布链接')
+            g['sample_canvas_url']=url.geturl()
+            self.put(g)
+        if not g.get('sample_node_saved'):
+            args=['node','create','video','--project-id',project,'--mode','m2v',
+                  '--model','seedance_2.5_draft','--ratio',g['ratio'],'--resolution','480p',
+                  '--duration',str(g['settings']['duration']),'--count','1']
+            if g['prompt']:args+=['--prompt',g['prompt']]
+            if not g.get('sample_node_id'):
+                g['sample_node_id']='node_'+uuid4().hex[:10]
+                self.put(g)
+            args+=['--node-id',g['sample_node_id']]
+            for ref in g['references']:
+                path=folder/ref['file']
+                if not path.is_file() or fingerprint(path)!=ref['sha256']:
+                    raise ValueError('参考素材已移动或变化，请重新创建任务')
+                if not ref.get('resource_id'):
+                    ref['resource_id']=str(uuid4())
+                    self.put(g)
+                if not ref.get('uploaded'):
+                    uploaded=self.canvas_command(g,'resource','upload','--project-id',project,'--resource-id',
+                                                 ref['resource_id'],'--file',path,'--type',ref['kind'])
+                    if uploaded.get('resourceId')!=ref['resource_id']:raise ValueError('即梦参考素材上传身份不符')
+                    ref['uploaded']=True
+                    self.put(g)
+                args+=['--ref','res:'+ref['resource_id']]
+            node=self.canvas_command(g,*args)['node']
+            if node.get('nodeId')!=g['sample_node_id']:raise ValueError('即梦样片节点身份不符')
+            g['sample_node_saved']=True
+            self.put(g)
+        quote=self.canvas_command(g,'node','quote','--project-id',project,'--node-id',g['sample_node_id'])
+        credits=quote.get('totalMaxCredits')
+        if type(credits) is not int or credits<0:raise ValueError('即梦未返回可用的样片报价')
+        g.update(status='awaiting_sample_approval',stage='样片已报价，请确认积分上限',sample_credits=credits)
+        return g
+
     def jimeng(self,g,query_only=False):
         folder=self.folder(g);cfg=g['settings'];binary=cfg['dreamina_bin']
         if not g.get('submit_id'):
             if query_only:raise ValueError('没有已记录的即梦任务ID，请先核查任务历史')
             intent=folder/'jimeng-submit.json'
             if intent.exists():raise ValueError('上次即梦提交结果不明，请先核查任务历史；禁止自动重提')
-            help_text=self.command([binary,'text2video','-h'],folder)
+            first=g.get('first_frame')
+            frame=folder/first['file'] if first else None
+            if frame and (not frame.is_file() or fingerprint(frame)!=first['sha256']):
+                raise ValueError('首帧图片已移动或变化，请重新创建任务')
+            refs=[(ref['kind'],folder/ref['file'],ref['sha256']) for ref in g.get('references',[])]
+            if any(not path.is_file() or fingerprint(path)!=sha for _,path,sha in refs):
+                raise ValueError('参考素材已移动或变化，请重新创建任务')
+            subcommand='multimodal2video' if refs else 'image2video' if frame else 'text2video'
+            help_text=self.command([binary,subcommand,'-h'],folder)
             self.command([binary,'user_credit','-h'],folder)
             self.command([binary,'user_credit'],folder)
             if cfg['jimeng_model'] and cfg['jimeng_model'] not in help_text:raise ValueError('当前即梦CLI帮助不支持所选模型，请检查配置')
-            if not cfg['jimeng_model'] and (cfg['video_resolution']!='720p' or cfg['duration']>15):raise ValueError('使用CLI默认模型时请选720p、4–15秒，或明确指定支持的模型')
+            if not cfg['jimeng_model'] and (cfg['duration']>15 or subcommand=='text2video' and cfg['video_resolution']!='720p'):
+                raise ValueError('当前默认模型不支持所选分辨率或时长，请选择支持的模型')
             prompt=g['script']['jimeng_prompt']+'\n必须严格9:16；自带与口型同步的口播音频；不加字幕或屏幕文字。'
-            args=[binary,'text2video','--prompt',prompt,'--ratio','9:16','--duration',str(cfg['duration']),
+            args=[binary,subcommand,'--prompt',prompt,'--duration',str(cfg['duration']),
                 '--video_resolution',cfg['video_resolution'],'--poll','0']
+            if frame:args+=['--image',frame]
+            for kind,path,_ in refs:args+=['--'+kind,path]
+            if not frame or cfg['jimeng_model']!='seedance2.5':args+=['--ratio','9:16']
             if cfg['jimeng_model']:args+=['--model_version',cfg['jimeng_model']]
             save(intent,{'attempted_at':now(),'prompt_sha256':__import__('hashlib').sha256(prompt.encode()).hexdigest(),'automatic_resubmit':False})
             result=self.parse_cli(self.command(args,folder));save(folder/'jimeng-submit-result.json',result)
@@ -285,7 +493,7 @@ class Generation:
             raise ValueError('需要确认当前版本的即梦开头')
         cfg=g['settings'];voice=cfg.get('voice_id') or self.config().get('voice_id')
         if not voice:raise ValueError('请在生成服务设置中填写ElevenLabs声音ID')
-        from elevenlabs_adapter import request,aligned_words
+        from elevenlabs_adapter import request
         folder=self.folder(g);audio=folder/'continuation.mp3';timing_file=folder/'continuation-timing.json'
         if not timing_file.exists():
             key=self.elevenlabs_key()
@@ -294,11 +502,10 @@ class Generation:
             result,digest=request(folder,'text-to-speech/'+quote(voice,safe='')+'/with-timestamps',
                 {'text':g['script']['continuation_copy'],'model_id':cfg['tts_model']},None,paid,api_key_value=key)
             audio.write_bytes(base64.b64decode(result['audio_base64'],validate=True))
-            words=aligned_words(result,'tts',g['language'])
-            segments=phrases([{'start':words[0]['start'],'end':words[-1]['end'],'text':''.join(w['text'] for w in words),'words':words}],language=g['language'])
-            check_segments(segments,media_duration(probe(audio),'audio'))
-            save(timing_file,{'segments':segments,'audio_sha256':fingerprint(audio),'source':'elevenlabs_timestamps',
-                              'request_hash':digest,'human_reviewed':False})
+            segments=narration_segments(result,g['language'],media_duration(probe(audio),'audio'))
+            receipt={'audio_sha256':fingerprint(audio),'request_hash':digest,'human_reviewed':False}
+            if segments:receipt.update(source='elevenlabs_timestamps',segments=segments)
+            save(timing_file,receipt)
         timing_data=read(timing_file)
         if fingerprint(audio)!=timing_data['audio_sha256']:raise ValueError('续接配音被修改，不沿用旧时间轴')
         w=g['workspace_id'];p=g['product_id'];edit=self.app.editing
@@ -308,40 +515,61 @@ class Generation:
                 with file.open('rb') as stream:uploads[field]=edit.upload(p,w,file.name,kind,stream,file.stat().st_size)['id']
             g['uploads']=uploads;self.put(g)
         if not g.get('editing_batch_id'):
-            batch=edit.create(p,w,{'narrations':[{'id':g['uploads']['audio'],'script':g['script']['continuation_copy']}],
+            batch=edit.create_uploaded(p,w,{'narrations':[{'id':g['uploads']['audio'],'script':g['script']['continuation_copy']}],
                 'clips':[{'id':g['uploads']['intro'],'position':'intro'}],'mode':g['mode'],'rights_allowed':True,
                 'language':g['language'],'request':g['script']['visual_requirements'],
-                'matching_mode':'semantic','auto_preview':True})
-            g['editing_batch_id']=batch['id'];self.put(g)
-        cache=self.app.wroot(w)/'editing-audio'/(timing_data['audio_sha256']+'-'+g['language']+'.json');save(cache,timing_data)
-        # Handoff is persisted before queueing so a restart never recreates paid assets.
-        g.update(status='editing_ready',stage='即梦开头与续接配音已接入剪辑，正在按账号素材库规划与合成');self.put(g)
+                'matching_mode':'semantic','auto_preview':True},generation=g)
+            g['editing_batch_id']=batch['id']
+        if timing_data.get('segments'):
+            cache=self.app.wroot(w)/'editing-audio'/(timing_data['audio_sha256']+'-'+g['language']+'.json')
+            save(cache,timing_data)
         if not g.get('editing_started'):
-            tasks=edit.tasks(w,g['editing_batch_id'])
-            if all(t['status']=='ready' for t in tasks):edit.action(p,w,g['editing_batch_id'],'plan',{'allow_paid':paid})
-            g['editing_started']=True;self.put(g)
+            bid=g['editing_batch_id']
+            edit.batch(p,w,bid)
+            task,=edit.tasks(w,bid)
+            if task['status'] in {'ready','interrupted'}:
+                op='plan' if task['status']=='ready' else 'resume'
+                accepted=edit.action(p,w,bid,op,{'task_ids':[task['id']],'allow_paid':paid})
+                if not accepted['queued']:raise ValueError('剪辑批次已保存，选片尚未启动，可在原任务中继续')
+            g['editing_started']=True
+        g.update(status='editing_ready',stage='即梦开头与续接配音已接入剪辑，请在剪辑记录中查看进度')
         return g
 
     def action(self,p,w,gid,op,body):
         with self.app.lock:
             g=self.get(p,w,gid)
+            previous=dict(g)
             if g['status'] in {'queued','running'}:raise Problem('任务正在执行',409)
-            if op not in {'start','poll','approve-intro','resume'}:raise Problem('未知生成操作')
+            if op not in {'start','poll','approve-intro','resume','approve-sample'}:raise Problem('未知生成操作')
+            if op=='approve-sample':
+                if not g.get('sample') or g['status']!='awaiting_sample_approval' or g.get('submit_id') or type(body.get('credits')) is not int or body['credits']!=g.get('sample_credits'):
+                    raise Problem('样片报价已变化或已提交，请刷新任务',409)
+                g['sample_approved_credits']=body['credits']
+            if g.get('sample') and op not in {'start','poll','approve-sample'}:
+                raise Problem('此操作不适用于即梦样片')
+            if g.get('sample') and op=='start' and (g.get('submit_id') or g['status']=='sample_ready'):
+                raise Problem('样片已提交，请查询原任务',409)
             if op=='approve-intro':
                 if g['status']!='awaiting_intro_review' or body.get('content_confirmed') is not True or body.get('intro_sha256')!=g.get('intro',{}).get('sha256'):
                     raise Problem('请实际播放并确认当前即梦视频后继续',409)
                 g['intro_approval']={'sha256':g['intro']['sha256'],'at':now()}
-            if op!='poll' and body.get('allow_paid') is not True:raise Problem('需要允许本阶段的外部服务费用')
+            if op!='poll' and not (g.get('sample') and op=='start') and body.get('allow_paid') is not True:raise Problem('需要允许本阶段的外部服务费用')
             if op=='poll' and not g.get('submit_id'):raise Problem('尚无可查询的即梦任务ID')
-            if g.get('editing_batch_id'):return g
+            if g.get('editing_batch_id') and (g.get('editing_started') or op!='resume'):return g
             g.update(status='queued',operation=op,stage='等待执行');g.pop('error',None);self.put(g)
-            if self.app.pool:self.app.pool.submit(self.run,p,w,gid,op,body.get('allow_paid') is True)
+            if self.app.pool:
+                try:self.app.pool.submit(self.run,p,w,gid,op,body.get('allow_paid') is True)
+                except RuntimeError as exc:
+                    self.put(previous)
+                    raise Problem('生成执行队列暂不可用，请稍后在原任务中重试。',503) from exc
             return g
 
     def run(self,p,w,gid,op,paid=False):
         g=self.get(p,w,gid);g.update(status='running',stage='执行当前生成阶段');self.put(g)
         try:
-            if g.get('intro_approval'):
+            if g.get('sample'):
+                g=self.canvas_sample(g,op)
+            elif g.get('intro_approval'):
                 g=self.tts_and_edit(g,paid)
             elif op=='poll':g=self.jimeng(g,True)
             else:

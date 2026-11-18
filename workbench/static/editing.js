@@ -1,7 +1,7 @@
-function activeModule(){return ({'#editing':'editing','#narration':'narration'})[location.hash]||'materials'}
+function activeModule(){return ({'#editing':'editing','#narration':'narration','#generation':'generation'})[location.hash]||'materials'}
 function renderModuleNavigation(){
   const module=activeModule();
-  for(const [id,page] of [['homeNav','materials'],['narrationNav','narration'],['editingNav','editing']]){
+  for(const [id,page] of [['homeNav','materials'],['narrationNav','narration'],['generationNav','generation'],['editingNav','editing']]){
     const selected=module===page;
     const button=$('#'+id);button.classList.toggle('active',selected);
     if(selected)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
@@ -17,9 +17,11 @@ function editDownloadLink(output){
 const editLabels={ready:'待规划',timing_ready:'配音时间轴已识别',invalid:'输入无效',queued:'等待执行',running:'处理中',planned:'已规划',awaiting_review:'待审预览',completed:'已输出',needs_attention:'需要处理',paused:'已暂停',cancelled:'已取消',interrupted:'已中断'};
 function editingRows(tasks,page){const pages=Math.max(1,Math.ceil(tasks.length/20));page=Math.max(1,Math.min(page,pages));return {page,pages,rows:tasks.slice((page-1)*20,page*20)}}
 const closedEditStatuses=new Set(['completed','cancelled','invalid']);
+const stoppedEditStatuses=new Set(['paused','interrupted']);
+function editStatusLabel(task){return task.source_warning?'需重新选片':editLabels[task.status]||task.status}
 function editBatchLabel(batch){
   const first=batch.tasks[0],date=String(batch.created_at||'').replace('T',' ').slice(0,16);
-  const statuses=[...new Set(batch.tasks.map(t=>editLabels[t.status]||t.status))];
+  const statuses=[...new Set(batch.tasks.map(editStatusLabel))];
   const name=batch.tasks.length===1?first.name:`批量 · ${batch.tasks.length} 条`;
   return [name,statuses.join(' / '),date].filter(Boolean).join(' · ');
 }
@@ -27,9 +29,10 @@ function canRegenerate(t){return Boolean(t.plan)&&!['queued','running','invalid'
 function editingHistory(batches,batch,data){
   if(!batch)return '<section class="panel recent"><h2>剪辑历史</h2><p class="muted">还没有剪辑记录。</p></section>';
   const active=batch.tasks.filter(t=>!closedEditStatuses.has(t.status));
+  const runnable=active.filter(t=>!t.source_warning);
   const busy=active.some(t=>['queued','running'].includes(t.status));
-  const canPlan=!busy&&active.some(t=>['ready','timing_ready'].includes(t.status));
-  const canPreview=!busy&&active.some(t=>t.plan&&!t.preview);
+  const canPlan=!busy&&runnable.some(t=>['ready','timing_ready'].includes(t.status));
+  const canPreview=!busy&&runnable.some(t=>t.plan&&!t.preview);
   const completed=batch.tasks.filter(t=>t.output).length;
   return `<section class="panel recent">
     <div class="section-heading"><h2>剪辑历史</h2><label class="field"><span>查看记录</span><select id="editBatch" aria-label="查看剪辑记录">${[...batches].reverse().map(b=>`<option value="${esc(b.id)}" ${b.id===batch.id?'selected':''}>${esc(editBatchLabel(b))}</option>`).join('')}</select></label></div>
@@ -39,18 +42,19 @@ function editingHistory(batches,batch,data){
       <p class="result-note">${esc(batch.rules.request?.trim()?batch.rules.request:'本批未填写剪辑要求。')}</p>
     </div>
     ${active.length&&batch.tasks.length>1?`<div class="inline">
-      ${!busy&&active.some(t=>t.status==='needs_attention')?'<button data-edit-batch-action="resume">重试失败任务</button>':''}
+      ${!busy&&runnable.some(t=>t.status==='needs_attention')?'<button data-edit-batch-action="resume">重试失败任务</button>':''}
+      ${!busy&&runnable.some(t=>stoppedEditStatuses.has(t.status))?'<button data-edit-batch-action="continue-stopped">继续暂停或中断的任务</button>':''}
       ${canPlan?'<button data-edit-batch-action="plan">开始规划</button>':''}
       ${canPreview?'<button data-edit-batch-action="preview">生成预览</button>':''}
       ${busy?'<button data-edit-batch-action="pause">暂停本批</button>':''}
       <button data-edit-batch-action="cancel">取消本批</button></div>`:''}
     <div id="editHistoryTable" data-batch="${esc(batch.id)}" data-page="${data.page}" class="asset-table-wrap" style="margin-top:12px;max-height:650px"><table class="asset-table">
       <thead><tr><th>输入文件</th><th>音频时长</th><th>状态</th><th>成片文件名</th><th>结果</th></tr></thead>
-      <tbody>${data.rows.map(t=>`<tr><td>${esc(t.name)}${t.variant?`<div class="small muted">候选 ${t.variant} / ${batch.variant_count}</div>`:''}</td><td>${t.audio_duration==null?'—':t.audio_duration.toFixed(2)+' 秒'}</td><td>${badge(editLabels[t.status]||t.status)}${t.error||['queued','running'].includes(t.status)?`<div class="small muted">${esc(t.error||t.stage)}</div>`:''}</td>
+      <tbody>${data.rows.map(t=>`<tr><td>${esc(t.name)}${t.variant?`<div class="small muted">候选 ${t.variant} / ${batch.variant_count}</div>`:''}</td><td>${t.audio_duration==null?'—':t.audio_duration.toFixed(2)+' 秒'}</td><td>${badge(editStatusLabel(t))}${t.source_warning||t.error||['queued','running'].includes(t.status)?`<div class="small muted">${esc(t.source_warning||t.error||t.stage)}</div>`:''}</td>
         <td class="file-path">${esc(editOutputName(t.output)||'—')}</td>
-        <td><div class="inline">${t.output?.media_url?editDownloadLink(t.output):t.preview&&!closedEditStatuses.has(t.status)&&!['queued','running'].includes(t.status)?`<button data-edit-review="${esc(t.id)}">核对预览</button>`:'<button disabled>下载成片</button>'}
-        <button data-edit-detail="${esc(t.id)}">${t.output?'查看成片':t.preview?'查看预览':closedEditStatuses.has(t.status)?'查看记录':'查看任务'}</button>
-        ${t.status==='needs_attention'?`<button type="button" data-edit-retry="${esc(t.id)}">重试</button>`:''}
+        <td><div class="inline">${t.output?.media_url?editDownloadLink(t.output):t.preview&&!t.source_warning&&!closedEditStatuses.has(t.status)&&!['queued','running'].includes(t.status)?`<button data-edit-review="${esc(t.id)}">核对预览</button>`:'<button disabled>下载成片</button>'}
+        <button data-edit-detail="${esc(t.id)}">${t.output?'查看成片':t.preview?(t.source_warning?'查看旧预览':'查看预览'):closedEditStatuses.has(t.status)?'查看记录':'查看任务'}</button>
+        ${!t.source_warning&&(t.status==='needs_attention'||stoppedEditStatuses.has(t.status))?`<button type="button" data-edit-retry="${esc(t.id)}">${t.status==='needs_attention'?'重试':'继续'}</button>`:''}
         ${canRegenerate(t)?`<button data-edit-regenerate="${esc(t.id)}">沿用要求，重新选片</button>`:''}</div></td></tr>`).join('')}</tbody>
     </table></div>
     ${data.pages>1?`<div class="inline" style="justify-content:flex-end;margin-top:12px"><button id="editPrev" ${data.page===1?'disabled':''}>上一页</button><span>${data.page} / ${data.pages}</span><button id="editNext" ${data.page===data.pages?'disabled':''}>下一页</button></div>`:''}
@@ -75,7 +79,7 @@ function editingHome(){
     <div><button id="newReferenceBatch" ${p?.sentence_editing_only?'disabled':disabled}>按参考视频剪辑</button><p class="small muted">已有想参考的成片。上传参考视频，用素材库里的画面匹配它的镜头和节奏，配音可选。</p></div>
     <div><button id="newEditBatch" ${disabled}>用配音或音乐剪辑</button><p class="small muted">上传一条配音或音乐，从当前素材库选画面。音乐按整曲时长规划。</p></div>
   </div></section>
-  ${w?editingHistory(batches,batch,data):''}${w?generationSection():''}`;
+  ${w?editingHistory(batches,batch,data):''}`;
   if(historyScroll){
     const table=$('#editHistoryTable');
     [table.scrollLeft,table.scrollTop]=historyScroll;
@@ -99,11 +103,11 @@ function editingHome(){
     };
   });
   if(p)bindAccounts();$('#editRefresh').onclick=()=>refresh();
-  $('#newEditBatch').onclick=()=>editBatchDialog();$('#newReferenceBatch').onclick=()=>editBatchDialog(true);$('#newPairBatch').onclick=editPairBatchDialog;bindGeneration();
+  $('#newEditBatch').onclick=()=>editBatchDialog();$('#newReferenceBatch').onclick=()=>editBatchDialog(true);$('#newPairBatch').onclick=editPairBatchDialog;
   $('#deleteEditRecord')?.addEventListener('click',()=>{
-    if(!window.confirm('删除当前选中的剪辑批次记录？'))return;
+    if(!window.confirm('删除当前批次记录，并清理该批次的预览视频？'))return;
     action(async()=>{
-      await api(`${wb()}/editing/batches/${batch.id}/delete-record`,'POST',{});
+      await api(`${wb()}/editing/batches/${batch.id}/delete-record`,'POST',{delete_previews:true});
       editingBatchId=null;
       editingPage=1;
     });
@@ -116,14 +120,14 @@ function editingHome(){
   document.querySelectorAll('[data-edit-retry]').forEach(b=>b.onclick=event=>{event.preventDefault();editOperation('resume',b.dataset.editRetry)});
   document.querySelectorAll('[data-edit-batch-action]').forEach(b=>b.onclick=()=>editOperation(b.dataset.editBatchAction));
 }
-async function editUploadFile(file,kind){
+async function editUploadFile(file,kind,workspace){
   if(file.size>500000000)throw Error('单个文件不能超过500MB');
-  const response=await fetch(`${wb()}/editing/uploads`,{method:'POST',headers:{'X-Workbench-Token':window.WORKBENCH_TOKEN,'X-File-Name':encodeURIComponent(file.name),'X-Upload-Kind':kind,'Content-Type':'application/octet-stream'},body:file});
+  const response=await fetch(`${workspace}/editing/uploads`,{method:'POST',headers:{'X-Workbench-Token':window.WORKBENCH_TOKEN,'X-File-Name':encodeURIComponent(file.name),'X-Upload-Kind':kind,'Content-Type':'application/octet-stream'},body:file});
   const result=await response.json();if(!response.ok)throw Error(result.error||'上传失败');return result;
 }
 function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   const w=W(),count=w.shots.filter(s=>s.review_decision==='keep'&&s.human_confirmed&&!s.stale&&w.assets.some(a=>a.id===s.asset_id)).length;
-  const uploaded=new Map();
+  const workspace=wb(),uploaded=new Map();
   const generated=referenceMode?[]:readyNarrations(w);
   const selected=new Set(preselectedNarrations.filter(id=>generated.some(item=>item.upload_id===id)));
   dialog(referenceMode?'参考视频匹配镜头':'用配音或音乐剪辑',`<form id="editCreate"><div class="meta-box">使用 ${esc(P().name)} / ${esc(w.name)} 已确认素材库 · ${count} 个已确认镜头。无需重新上传素材。</div>
@@ -178,7 +182,29 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
       media.src=url;
     });
   }
+  const form=$('#editCreate'),progress=$('#editUploadProgress');
   const musicHistory=$('[name="history_music_id"]'), musicInput=$('#editMusic');
+  const lengthMode=referenceMode?null:$('[name="length_mode"]'),seconds=referenceMode?null:$('[name="target_duration"]');
+  const resetInspectors=[];
+  function clearInspections(){for(const reset of resetInspectors)reset()}
+  function upload(file,kind){
+    if(!uploaded.has(kind))uploaded.set(kind,new WeakMap());
+    const files=uploaded.get(kind);
+    if(!files.has(file)){
+      progress.textContent='正在上传并检查：'+file.name;
+      files.set(file,editUploadFile(file,kind,workspace).catch(error=>{files.delete(file);throw error}));
+    }
+    return files.get(file);
+  }
+  async function backgroundId(file,historyId){
+    return file?(await upload(file,'music')).id:historyId;
+  }
+  function lengthSettings(f){
+    if(!lengthMode||lengthMode.disabled)return {};
+    if(f.get('length_mode')==='music')return {follow_music:true};
+    if(f.get('length_mode')==='custom')return {target_duration:Number(f.get('target_duration'))};
+    return {};
+  }
   const musicLibrary=w.background_music_history||[];
   function updateBatchMusic(){
     const selectedMusic=musicInput.files?.[0]||musicLibrary.find(item=>item.id===musicHistory.value);
@@ -189,6 +215,7 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
       : selectedMusic?`已选背景音乐「${selectedMusic.name}」。`:'选择一首背景音乐，应用于本次生成的视频。';
   }
   musicHistory.addEventListener('change',()=>{
+    clearInspections();
     if(musicHistory.value){
       musicInput.value='';
       $('#editMusicDuration').textContent='';
@@ -196,6 +223,7 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
     updateBatchMusic();
   });
   musicInput.addEventListener('change',()=>{
+    clearInspections();
     if(musicInput.files.length)musicHistory.value='';
     updateBatchMusic();
   });
@@ -231,7 +259,11 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
     $('#editVariantField').hidden=variants.disabled;
     updateBatchMusic();
     if(!referenceMode){
-      $('#editTargetDuration').hidden=audioKind?.value==='music'||variants.disabled;
+      lengthMode.disabled=audioKind?.value==='music'||variants.disabled||matching.value==='semantic';
+      $('#editTargetDuration').hidden=lengthMode.disabled;
+      seconds.disabled=lengthMode.disabled||lengthMode.value!=='custom';
+      seconds.hidden=seconds.disabled;
+      seconds.required=!seconds.disabled;
       $('#editRequiredCuts').hidden=variants.disabled;
     }
     const multiple=Number(variants.value)>1;
@@ -248,8 +280,13 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
     if(variants.disabled)$('#editCreateSubmit').textContent=mode.value==='direct'?`输出 ${selected.size} 条视频`:`生成 ${selected.size} 条预览`;
     if(hasGenerated)$('#editUploadProgress').textContent=selected.size?'已带入所选配音及文案。':generated.length?'请至少选择一条配音。':'';
   }
-  matching.onchange=mode.onchange=variants.onchange=updateExecution;
+  mode.onchange=variants.onchange=updateExecution;
+  matching.onchange=()=>{clearInspections();updateExecution()};
+  if(lengthMode)lengthMode.onchange=()=>{clearInspections();updateExecution()};
+  if(seconds)seconds.oninput=clearInspections;
+  commonRequest.oninput=clearInspections;
   function audioSettings(){
+    clearInspections();
     const music=audioKind?.value==='music';
     if(narrationSource)$('#editNarrationSourceField').hidden=music;
     $('#editNarrationLabel').textContent=music?'上传音乐（必选）':referenceMode?'上传自己的配音（可选）':'上传配音（必选）';
@@ -280,53 +317,60 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   for(const editor of individualEditors){
     const field=editor.querySelector('textarea'), result=editor.querySelector('[data-individual-result]');
     const button=editor.querySelector('[data-check-individual]');
+    let revision=0;
+    const reset=()=>{revision++;result.textContent='';button.disabled=false};
+    resetInspectors.push(reset);
     field.oninput=()=>{
       editor.querySelector('[data-individual-filled]').textContent=field.value.trim()?'· 已填写':'';
-      result.textContent='';
+      reset();
     };
     button.onclick=async()=>{
       const request=field.value, common=commonRequest.value;
       const id=editor.parentElement.querySelector('input[type="checkbox"]').value;
+      const check=++revision,f=new FormData(form),length=lengthSettings(f);
       button.disabled=true;
       result.textContent='正在检查…';
       try{
-        const response=await api(`${wb()}/editing/narration-request/inspect`,'POST',{id,request,common});
+        const body={id,request,common,...length};
+        if(length.follow_music||'target_duration' in length)
+          body.music_id=await backgroundId(musicInput.files[0],f.get('history_music_id'));
+        if(check!==revision)return;
+        const response=await api(`${workspace}/editing/narration-request/inspect`,'POST',body);
+        if(check!==revision)return;
         result.textContent=response.requirements.length
           ? '已识别 '+response.requirements.length+' 条（含通用要求） · '+response.requirements.map(rule=>`${rule.text} → ${rule.labels.join('＋')}${rule.excluded.length?'（排除 '+rule.excluded.join('、')+'）':''}`).join(' / ')
           : '本条将按产品总纲自动选片。';
-      }catch(error){result.textContent=error.message;}
-      finally{button.disabled=false;}
+      }catch(error){if(check===revision)result.textContent=error.message;}
+      finally{if(check===revision)button.disabled=false;}
     };
   }
   audioSettings();
   document.querySelectorAll('[data-edit-folder]').forEach(b=>b.onclick=async()=>{try{const input=$('#'+b.dataset.editFolder);const r=await api('/api/choose-folder','POST',{initial:input.value});if(r.path)input.value=r.path}catch(e){toast(e.message)}});
-  $('#editCreate').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target),file=narrator.files[0],musicOnly=audioKind?.value==='music',music=$('#editMusic').files[0];
+  form.onsubmit=e=>{e.preventDefault();const f=new FormData(form),file=narrator.files[0],musicOnly=audioKind?.value==='music',music=musicInput.files[0];
     const body={auto_preview:true,variant_count:Number(f.get('variant_count')||1),mode:f.get('mode'),language:f.get('language'),request:f.get('request'),output_path:f.get('output_path'),model_path:f.get('model_path'),music_volume:Number(f.get('music_volume')),rights_allowed:f.has('rights_allowed'),keep_original_audio:f.has('keep_original_audio')};
     const history=usesHistory();
     if(history&&selected.size===0)return toast('请至少选择一条配音');
     if(history&&selected.size>100)return toast('每批最多选择 100 条配音');
-    return action(async()=>{if(f.get('matching_mode')==='duration'){try{const capabilities=await api('/api/editing-modes');if(!capabilities.modes.includes('duration'))throw new Error('unsupported')}catch(e){throw new Error('时长匹配需要加载新版服务，请待当前任务结束后重启工作台')}}async function upload(file,kind){const key=JSON.stringify([kind,file.name,file.size,file.lastModified]);if(!uploaded.has(key)){ $('#editUploadProgress').textContent='正在上传并检查：'+file.name;uploaded.set(key,await editUploadFile(file,kind))}return uploaded.get(key)}
-      body.narrations=history?generated.filter(item=>selected.has(item.upload_id)).map(item=>({id:item.upload_id,script:item.script,request:f.get('request_'+item.upload_id)||''})):[];
+    const reference=referenceMode?$('#editReference').files[0]:null;
+    body.narrations=history?generated.filter(item=>selected.has(item.upload_id)).map(item=>({id:item.upload_id,script:item.script,request:f.get('request_'+item.upload_id)||''})):[];
+    Object.assign(body,lengthSettings(f));
+    if(!referenceMode)body.required_cuts=body.narrations.length<2?(f.get('required_cuts')||''):'';
+    return action(async()=>{
+      if(f.get('matching_mode')==='duration'){try{const capabilities=await api('/api/editing-modes');if(!capabilities.modes.includes('duration'))throw new Error('unsupported')}catch(e){throw new Error('时长匹配需要加载新版服务，请待当前任务结束后重启工作台')}}
       if(file&&!history){
         if(musicOnly)body.primary_music_id=(await upload(file,'music')).id;
         else body.narrations.push({id:(await upload(file,'narration')).id,script:f.get('script_0')||''});
       }
-      const reference=referenceMode?$('#editReference').files[0]:null;
       if(reference)body.reference_id=(await upload(reference,'reference')).id;
-      if(!musicOnly&&!referenceMode&&(!history||selected.size<2)){
-        if(f.get('length_mode')==='music')body.follow_music=true;
-        if(f.get('length_mode')==='custom')body.target_duration=Number(f.get('target_duration'));
-      }
       if(!musicOnly){
-        if(music)body.music_id=(await upload(music,'music')).id;
-        else if(f.get('history_music_id'))body.music_id=f.get('history_music_id');
+        const id=await backgroundId(music,f.get('history_music_id'));
+        if(id)body.music_id=id;
       }
       body.analysis_mode=f.get('analysis_mode');body.matching_mode=f.get('matching_mode');
-      if(!referenceMode)body.required_cuts=!history||selected.size<2?(f.get('required_cuts')||''):'';
       if(musicOnly&&!body.required_cuts.trim())body.music_cue_assist=f.has('music_cue_assist');
-      const b=await api(`${wb()}/editing/batches`,'POST',body);
-      editingBatchId=b.id;editingPage=1;$('#dialog').close();
-      await api(`${wb()}/editing/batches/${b.id}/plan`,'POST',{allow_paid:body.matching_mode==='semantic'&&f.has('allow_paid')});
+      const b=await api(`${workspace}/editing/batches`,'POST',body);
+      if(wb()===workspace&&$('#editCreate')===form){editingBatchId=b.id;editingPage=1;$('#dialog').close();}
+      await api(`${workspace}/editing/batches/${b.id}/plan`,'POST',{allow_paid:body.matching_mode==='semantic'&&f.has('allow_paid')});
     });
   };
 }
@@ -334,15 +378,21 @@ function currentEditBatch(){return W()?.editing_batches?.find(b=>b.id===editingB
 function editOperation(op,taskId,extra={}){
   const batch=currentEditBatch();
   if(!batch)return;
-  const endpoint=`${wb()}/editing/batches/${batch.id}/${op}`;
-  if(op==='resume'&&!taskId){
-    extra.task_ids=currentEditBatch().tasks.filter(t=>t.status==='needs_attention').map(t=>t.id);
-    if(!extra.task_ids.length)return toast('没有需要重试的任务');
+  const runnable=batch.tasks.filter(t=>!t.source_warning);
+  if((op==='resume'||op==='continue-stopped')&&!taskId){
+    const stopped=op==='continue-stopped';
+    extra.task_ids=runnable.filter(t=>stopped?stoppedEditStatuses.has(t.status):t.status==='needs_attention').map(t=>t.id);
+    if(!extra.task_ids.length)return toast('没有符合条件的任务');
+    op='resume';
   }
-  if(op==='preview'&&!taskId){extra.task_ids=currentEditBatch().tasks.filter(t=>t.plan&&!['running','queued','completed','cancelled','invalid'].includes(t.status)).map(t=>t.id);if(!extra.task_ids.length)return toast('没有可生成预览的已规划任务')}
+  const endpoint=`${wb()}/editing/batches/${batch.id}/${op}`;
+  if(op==='preview'&&!taskId){extra.task_ids=runnable.filter(t=>t.plan&&!t.preview&&!closedEditStatuses.has(t.status)&&!['running','queued'].includes(t.status)).map(t=>t.id);if(!extra.task_ids.length)return toast('没有可生成预览的已规划任务')}
+  if(op==='plan'&&!taskId){extra.task_ids=runnable.filter(t=>['ready','timing_ready'].includes(t.status)).map(t=>t.id);if(!extra.task_ids.length)return toast('没有等待规划的任务')}
   const go=allow_paid=>action(async()=>{await api(endpoint,'POST',{...(taskId?{task_ids:[taskId]}:{}),...extra,allow_paid});if($('#dialog').open)$('#dialog').close()});
-  if(['plan','resume'].includes(op)&&currentEditBatch()?.rules.matching_mode!=='duration'){
-    dialog('规划剪辑',`<p>${currentEditBatch()?.reference?'将参考片采样图与已有镜头记录用于匹配，并用入选及备选区间的采样图复核是否同源。调用':'将配音文本、产品知识和已保存的素材分析发送给'} ${esc(state.capabilities.config.model)}，不重新发送整库视频。使用当前配置的模型额度。</p><label class="check-label"><input id="editPaid" type="checkbox">允许本次规划调用；未完整返回时不自动重试</label><button id="editGo" class="primary">开始规划${currentEditBatch()?.rules.mode==='direct'?'并直接输出':''}</button>`);
+  const targets=new Set(taskId?[taskId]:extra.task_ids);
+  if(batch.rules.matching_mode!=='duration'&&batch.tasks.some(t=>targets.has(t.id)&&!t.plan&&
+      (op==='plan'||op==='resume'&&(t.operation||'plan')==='plan'))){
+    dialog('规划剪辑',`<p>${batch.reference?'将参考片采样图与已有镜头记录用于匹配，并用入选及备选区间的采样图复核是否同源。调用':'将配音文本、产品知识和已保存的素材分析发送给'} ${esc(state.capabilities.config.model)}，不重新发送整库视频。使用当前配置的模型额度。</p><label class="check-label"><input id="editPaid" type="checkbox">允许本次规划调用；未完整返回时不自动重试</label><button id="editGo" class="primary">开始规划${batch.rules.mode==='direct'?'并直接输出':''}</button>`);
     $('#editGo').onclick=()=>{if(!$('#editPaid').checked)return toast('请明确允许本次模型调用');go(true)};
   }else return go(false);
 }
@@ -363,20 +413,22 @@ function regenerateEdit(id){
 function editTaskDialog(id){
   const b=currentEditBatch(),t=b.tasks.find(t=>t.id===id);if(!t)return;
   const busy=['queued','running'].includes(t.status),off=closedEditStatuses.has(t.status);
-  dialog(t.name,`<div style="max-height:72vh;overflow:auto"><p>${badge(editLabels[t.status])} ${esc(t.stage)}</p>${t.error?`<p class="error">${esc(t.error)}</p>`:''}
+  const ready=['ready','timing_ready'].includes(t.status),canContinue=stoppedEditStatuses.has(t.status)||t.status==='needs_attention';
+  dialog(t.name,`<div style="max-height:72vh;overflow:auto"><p>${badge(editStatusLabel(t))} ${t.source_warning?'':esc(t.stage)}</p>${t.source_warning||t.error?`<p class="error">${esc(t.source_warning||t.error)}</p>`:''}
   <p class="small file-path">${b.rules.reference_only?'参考片（无配音）':b.rules.audio_kind==='music'?'音乐':'配音'}：${esc(t.name)}${t.intro?`<br>原批次前段：${esc(t.intro)}`:''}</p>${t.individual_request?`<details open><summary>单条补充要求</summary><p class="result-note">${esc(t.individual_request)}</p></details>`:''}${t.script?`<details><summary>用户提供的整段文案</summary><p class="result-note">${esc(t.script)}</p></details>`:''}
   ${t.output||t.preview?`<video class="preview-video" controls playsinline preload="metadata" src="${esc((t.output||t.preview).media_url)}"></video>${t.output?`<p>${editDownloadLink(t.output)} · ${t.human_reviewed?'已确认预览':'未人工审片'}</p>`:''}`:''}
   ${t.script_check&&!t.script_check.matched?'<p class="warning">整段文案与音频识别文字存在差异，请核对下方时间轴。</p>':''}${t.timeline?`<details><summary>音频时间轴（${t.timeline.segments.length}段，来源 ${esc(t.timeline.source)}）</summary>${t.timeline.segments.map(s=>`<p class="small">${s.start.toFixed(2)}–${s.end.toFixed(2)} · ${esc(s.text)}</p>`).join('')}</details>`:''}
   ${b.reference?'<button id="inspectReference">查看逐镜诊断与纠错</button>':''}
   ${referenceMatchPanel(b,t,busy||off)}
   ${t.reference_analysis?`<details><summary>参考视频结构（采样初审，非精确切点）</summary>${t.reference_analysis.beats.map(x=>`<p>${x.start}–${x.end}秒 · ${esc(x.purpose)} · ${esc(x.action)} · ${esc(x.composition)}</p>${x.must_see?`<p>必须看见 · ${esc(x.must_see.join('；'))}</p>${x.flexible?.length?`<p>允许变化 · ${esc(x.flexible.join('；'))}</p>`:''}`:''}`).join('')}</details>`:''}${t.plan?`<details><summary>剪辑清单（${t.plan.parts.length}段）</summary>${t.plan.parts.map(p=>`<p class="small">${p.timeline_start.toFixed(2)}–${p.timeline_end.toFixed(2)} · ${esc(p.reason)}</p>`).join('')}<label class="field"><span>修正清单 JSON（只能使用已确认镜头与安全区间）</span><textarea id="editPlanJson" style="min-height:180px">${esc(JSON.stringify(t.plan,null,2))}</textarea></label><button id="editSavePlan" ${busy||off?'disabled':''}>保存修改并重新预览</button></details>`:''}
-  ${off?'':`<div class="inline" style="margin-top:16px"><button data-edit-op="${['ready','timing_ready'].includes(t.status)?'plan':'resume'}" ${busy||off?'disabled':''}>${t.plan?'继续任务':'规划选片'}</button><button data-edit-op="preview" ${!t.plan||busy||off?'disabled':''}>生成预览</button><button data-edit-op="pause" ${off?'disabled':''}>暂停</button><button data-edit-op="cancel" ${off?'disabled':''}>取消</button></div>`}
-  ${t.plan&&!off?`<div style="margin-top:16px">${b.rules.mode==='preview'?'<p class="small muted">请先播放预览，核对内容、动作完整性、配音时间轴和音画衔接。</p>':''}<button class="primary" id="editFinal" ${busy||t.plan.reference_gaps?.length||b.rules.mode==='preview'&&!t.preview?'disabled':''}>${b.rules.mode==='direct'?'直接输出（未人工审片）':'已核对，确认输出'}</button></div>`:''}</div>`);
+  ${off?'':`<div class="inline" style="margin-top:16px">${t.source_warning?'':ready?'<button data-edit-op="plan">规划选片</button>':canContinue?'<button data-edit-op="resume">继续任务</button>':''}<button data-edit-op="preview" ${!t.plan||busy||t.source_warning?'disabled':''}>生成预览</button><button data-edit-op="pause" ${busy||ready?'':'disabled'}>暂停</button><button data-edit-op="cancel">取消</button></div>`}
+  ${t.plan&&!off?`<div style="margin-top:16px">${t.source_warning&&!busy?'<button id="editReselect">沿用要求，重新选片</button>':b.rules.mode==='preview'?'<p class="small muted">请先播放预览，核对内容、动作完整性、配音时间轴和音画衔接。</p>':''}<button class="primary" id="editFinal" ${busy||t.source_warning||t.plan.reference_gaps?.length||b.rules.mode==='preview'&&!t.preview?'disabled':''}>${b.rules.mode==='direct'?'直接输出（未人工审片）':'已核对，确认输出'}</button></div>`:''}</div>`);
   document.querySelectorAll('[data-edit-op]').forEach(button=>button.onclick=()=>editOperation(button.dataset.editOp,id));
   $('#inspectReference')?.addEventListener('click',()=>showReferenceReview(b,t));
   bindReferenceMatchPanel(b,t,busy||off);
   $('#editSavePlan')?.addEventListener('click',()=>{try{editOperation('save-plan',id,{plan:JSON.parse($('#editPlanJson').value),plan_revision:t.plan_revision})}catch(e){toast('JSON 格式错误：'+e.message)}});
-  $('#editFinal')?.addEventListener('click',()=>{editOperation('output',id,{content_confirmed:b.rules.mode==='preview',preview_sha256:t.preview?.sha256})});
+  $('#editReselect')?.addEventListener('click',()=>regenerateEdit(id));
+  $('#editFinal')?.addEventListener('click',()=>{editOperation('output',id,{content_confirmed:b.rules.mode==='preview',preview_sha256:t.preview?.sha256,plan_revision:t.plan_revision})});
 }
 
 function referenceMatchPanel(batch, task, locked) {

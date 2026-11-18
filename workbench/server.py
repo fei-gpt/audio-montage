@@ -1,5 +1,5 @@
 """Loopback-only HTTP API. All account media operations use nested scoped routes."""
-import argparse, base64, hashlib, json, mimetypes, os, re, secrets, subprocess, sys, urllib.parse
+import argparse, base64, gzip, hashlib, json, mimetypes, os, re, secrets, subprocess, sys, urllib.parse
 from pathlib import Path
 from functools import partial
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -10,10 +10,32 @@ configure()
 from workbench.backend import Workbench, Problem
 STATIC=Path(__file__).parent/'static'
 
+def shot_summary(shot):
+    # With recognition disabled the browser uses shots for counts and category fallback.
+    summary={k:shot[k] for k in ('id','asset_id','asset_sha256','stale','review_decision','human_confirmed') if k in shot}
+    details=shot.get('visual_details')
+    if isinstance(details,dict) and isinstance(details.get('display_categories'),list):
+        summary['visual_details']={'display_categories':details['display_categories']}
+        sword=details.get('light_sword')
+        if isinstance(sword,dict) and 'evidence' in sword:
+            summary['visual_details']['light_sword']={'evidence':sword['evidence']}
+    return summary
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def json(self,obj,status=200):
-        data=json.dumps(obj,ensure_ascii=False).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+        data=json.dumps(obj,ensure_ascii=False).encode()
+        self.send_response(status)
+        if self.path.partition('?')[0]=='/api/state':
+            self.send_header('Vary','Accept-Encoding')
+            encodings={value.strip().lower() for value in self.headers.get('Accept-Encoding','').split(',')}
+            if len(data)>=65536 and 'gzip' in encodings:
+                data=gzip.compress(data,compresslevel=1)
+                self.send_header('Content-Encoding','gzip')
+        self.send_header('Content-Type','application/json; charset=utf-8')
+        self.send_header('Cache-Control','no-store')
+        self.send_header('Content-Length',str(len(data)))
+        self.end_headers();self.wfile.write(data)
     def guard(self):
         host=self.headers.get('Host','')
         if host not in {f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}'}:raise Problem('无效本地主机',403)
@@ -75,27 +97,34 @@ class Handler(BaseHTTPRequestHandler):
     def route(self,method,path,b,q):
         app=self.app;s=app.store
         if path=='/api/state' and method=='GET':
+            # Capture before reading: a concurrent commit must trigger the next poll.
+            compact=q.get('view')==['workbench'] and not app.asset_recognition_enabled
+            revision=('summary-' if compact else 'full-')+s.revision
+            if q.get('since')==[revision]:
+                return {'unchanged':True}
             products=s.all('product','root')
             for p in products:
                 p.update(app.product(p['id']))
                 p['sources']=s.all('source',p['id']);p['jobs']=s.all('job',p['id']);p['workspaces']=s.all('workspace',p['id'])
                 for w in p['workspaces']:
-                    w.update(libraries=s.all('library',w['id']),assets=s.all('asset',w['id']),shots=s.all('shot',w['id']),jobs=s.all('job',w['id']),exports=s.all('export',w['id']))
-                    w['assets']=app.visible_assets(w['id'])
+                    w.update(libraries=s.all('library',w['id']),shots=s.all('shot',w['id']),jobs=s.all('job',w['id']),exports=s.all('export',w['id']))
+                    if compact:w['shots']=[shot_summary(shot) for shot in w['shots']]
+                    w['assets']=app.visible_assets(w['id'],libraries=w['libraries'])
+                    uploads=s.all('edit_upload',w['id'])
                     music_history={}
-                    for upload in reversed(s.all('edit_upload',w['id'])):
+                    for upload in reversed(uploads):
                         if upload.get('kind')!='music' or not Path(upload['path']).is_file():
                             continue
                         music_history.setdefault(upload['sha256'], {
                             key:upload[key] for key in ('id','name','duration')
                         })
                     w['background_music_history']=list(music_history.values())
-                    w['editing_batches']=app.editing.list(p['id'],w['id'])
+                    w['editing_batches']=app.editing.list(p['id'],w['id'],assets=w['assets'])
                     exported_audio={task['audio'] for batch in w['editing_batches'] for task in batch['tasks']
                                      if task.get('audio')
                                      and task['status']=='completed' and task.get('output')}
                     w['narrations']=s.all('narration',w['id'])
-                    used_uploads={upload['id'] for upload in s.all('edit_upload',w['id'])
+                    used_uploads={upload['id'] for upload in uploads
                                   if upload['path'] in exported_audio} if exported_audio and w['narrations'] else set()
                     for item in w['narrations']:
                         if item.get('upload_id'):
@@ -109,18 +138,24 @@ class Handler(BaseHTTPRequestHandler):
                             batch['reference']['media_url']=self.media_url(p['id'],w['id'],'edit',batch['tasks'][0]['id']+'-2')
                         for task in batch['tasks']:
                             for key,index in [('preview','0'),('output','1')]:
-                                if task.get(key):task[key]['media_url']=self.media_url(p['id'],w['id'],'edit',task['id']+'-'+index)
+                                if task.get(key):
+                                    ident=task['id']
+                                    if key=='preview' and task[key].get('sha256'):ident+='-'+task[key]['sha256']
+                                    task[key]['media_url']=self.media_url(p['id'],w['id'],'edit',ident+'-'+index)
                     for a in w['assets']:a['media_url']=self.media_url(p['id'],w['id'],'asset',a['id'])
                     for e in w['exports']:
                         for i,f in enumerate(e['files']):f['media_url']=self.media_url(p['id'],w['id'],'export',e['id']+'-'+str(i))
             from workbench.local_asr import status as asr_status
-            return {'products':products,'capabilities':app.status(),'generation_config':app.generation.status(),'editing_capabilities':{'local_asr':asr_status()}}
-        if path=='/api/generation/settings':
-            if method=='GET':return app.generation.status()
-            if method=='POST':return app.generation.settings(b)
+            return {'revision':revision,'products':products,'capabilities':app.status(),'generation_config':app.generation.status(),'editing_capabilities':{'local_asr':asr_status(),'canvas_sample':True}}
+        if method=='POST' and path in {'/api/settings','/api/generation/settings'}:
+            # Both settings pages update the same local credentials file.
+            with app.lock:
+                result=app.set_config(b) if path=='/api/settings' else app.generation.settings(b)
+                s.revision=secrets.token_hex(16)
+                return result
+        if path=='/api/generation/settings' and method=='GET':return app.generation.status()
         if path=='/api/generation/voices' and method=='GET':return app.generation.voices()
         if path=='/api/editing-modes' and method=='GET':return {'modes':['semantic','duration'],'version':1}
-        if path=='/api/settings' and method=='POST':return app.set_config(b)
         if path=='/api/products' and method=='POST':return app.create_product(b.get('name',''))
         if path=='/api/migrate' and method=='POST':return app.migrate(b)
         if path=='/api/choose-folder' and method=='POST':
@@ -133,11 +168,7 @@ class Handler(BaseHTTPRequestHandler):
         if not m:raise Problem('接口不存在',404)
         p,tail=m.groups();app.product(p)
         if not tail and method=='PATCH':
-            obj=app.product(p)
-            for field in ['name','extra_request']:
-                if field in b:obj[field]=str(b[field]).strip()[:10000]
-            if not obj['name']:raise Problem('产品名称不能为空')
-            return s.put('product','root',obj)
+            return app.update_product(p,b)
         if tail=='sources' and method=='POST':return app.add_source(p,b)
         if tail=='sources/reference' and method=='POST':return app.reference_sources(p,b.get('selections'))
         if tail=='editing-guidelines' and method=='POST':return app.save_editing_guidelines(p,b.get('text'))
@@ -181,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
             return s.put('workspace',p,ws)
         if rest=='libraries' and method=='POST':return app.attach_library(p,w,b.get('path',''),b.get('kind'),b.get('category'))
         category_asset=re.fullmatch(r'assets/([a-f0-9]{32})/category',rest or '')
-        if category_asset and method=='POST':return app.confirm_asset_category(p,w,category_asset[1],b.get('labels',b.get('label')),b.get('confirmed',True) is True)
+        if category_asset and method=='POST':return app.confirm_asset_category(p,w,category_asset[1],b.get('labels',b.get('label')),b.get('confirmed',True) is True,expected_sha=b.get('sha256'))
         version=re.fullmatch(r'assets/([a-f0-9]{32})/standard-version',rest or '')
         if version and method=='POST':return app.select_standard_version(p,w,version[1],b)
         if rest=='scan' and method=='POST':return app.scan(p,w)
@@ -201,20 +232,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers();self.wfile.write(data)
     def serve_file(self,path):
         if not path.is_file():raise Problem('文件不存在',404)
-        size=path.stat().st_size;start=0;end=size-1;status=200
-        if self.headers.get('Range'):
-            match=re.fullmatch(r'bytes=(\d*)-(\d*)',self.headers['Range'])
-            if not match:raise Problem('Range无效',416)
-            left,right=match.groups()
-            if left:start=int(left);end=min(int(right),end) if right else end
-            elif right:start=max(0,size-int(right))
-            else:raise Problem('Range无效',416)
-            if start>end or start>=size:raise Problem('Range越界',416)
-            status=206
-        self.send_response(status);self.send_header('Content-Type',mimetypes.guess_type(path.name)[0] or 'application/octet-stream');self.send_header('Content-Length',str(end-start+1));self.send_header('Accept-Ranges','bytes');self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
-        if status==206:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
-        self.end_headers()
-        with path.open('rb') as f:
+        try:stream=path.open('rb')
+        except FileNotFoundError:raise Problem('文件不存在',404)
+        with stream as f:
+            size=os.fstat(f.fileno()).st_size;start=0;end=size-1;status=200
+            if self.headers.get('Range'):
+                match=re.fullmatch(r'bytes=(\d*)-(\d*)',self.headers['Range'])
+                if not match:raise Problem('Range无效',416)
+                left,right=match.groups()
+                if left:start=int(left);end=min(int(right),end) if right else end
+                elif right:start=max(0,size-int(right))
+                else:raise Problem('Range无效',416)
+                if start>end or start>=size:raise Problem('Range越界',416)
+                status=206
+            self.send_response(status);self.send_header('Content-Type',mimetypes.guess_type(path.name)[0] or 'application/octet-stream');self.send_header('Content-Length',str(end-start+1));self.send_header('Accept-Ranges','bytes');self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+            if status==206:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+            self.end_headers()
             f.seek(start);remaining=end-start+1
             while remaining:
                 chunk=f.read(min(65536,remaining))

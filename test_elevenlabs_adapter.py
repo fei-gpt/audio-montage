@@ -39,3 +39,26 @@ class ElevenLabsOfflineTest(unittest.TestCase):
             words = e.aligned_words({'words': [{'text': 'Hello', 'start': .2, 'end': .8}]}, mode, 'en')
             self.assertEqual(words[0]['start'], .2)
             self.assertEqual(words[0]['text'], 'Hello ')
+
+    def test_simultaneous_identical_requests_send_only_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from io import BytesIO
+        import json
+        fields={'text':'Hello'}
+        ready=Barrier(2)
+        serialize=json.dumps
+        def wait_before_submission(value,*args,**kwargs):
+            if value is fields:ready.wait(timeout=5)
+            return serialize(value,*args,**kwargs)
+        with tempfile.TemporaryDirectory() as tmp, patch('urllib.request.build_opener') as network:
+            network.return_value.open.side_effect=lambda *a,**kw:BytesIO(b'{"words":[]}')
+            def submit():return e.request(Path(tmp),'forced-alignment',fields,None,True,'test-key')
+            with patch.object(json,'dumps',side_effect=wait_before_submission),ThreadPoolExecutor(2) as pool:
+                jobs=[pool.submit(submit) for _ in range(2)]
+                for job in jobs:
+                    try:result,_=job.result()
+                    except ValueError as exc:self.assertIn('已有尝试记录',str(exc))
+                    else:self.assertEqual(result,{'words':[]})
+            self.assertEqual(submit()[0],{'words':[]})
+            network.return_value.open.assert_called_once()

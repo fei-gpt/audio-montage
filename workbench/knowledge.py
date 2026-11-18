@@ -43,7 +43,8 @@ def remap_profile(profile,mapping):
         if isinstance(value,list):return [convert(x) for x in value]
         if isinstance(value,dict):
             return {k:(mapping.get(v,v) if k in {'source_id','id'} and isinstance(v,str) else
-                       [mapping.get(x,x) for x in v] if k=='references' and isinstance(v,list) else convert(v))
+                       [mapping.get(x,x) if isinstance(x,str) else convert(x) for x in v]
+                       if k=='references' and isinstance(v,list) else convert(v))
                     for k,v in value.items()}
         return value
     return convert(profile)

@@ -1,4 +1,5 @@
 import tempfile
+import sqlite3
 import unittest
 from pathlib import Path
 from workbench.backend import Workbench, Problem
@@ -29,7 +30,8 @@ class SourceReuseTest(unittest.TestCase):
             p=app.create_product('Original');q=app.create_product('Target')
             file=app.root/'image.png';file.write_bytes(b'original')
             original=app.store.put('source',p['id'],{'name':'image.png','kind':'image','status':'understood','path':str(file),'image':str(file),'pages':[]})
-            p['profile']={'understood_at':'test','appearance':['blue toy'],'claims':[{'text':'claim','source_id':original['id']}],'references':[original['id']]}
+            p['profile']={'understood_at':'test','appearance':['blue toy'],'claims':[{'text':'claim','source_id':original['id']}],
+                          'references':[original['id'],{'source_id':original['id'],'image_position':0}]}
             app.store.put('product','root',p)
             selections=[{'product_id':p['id'],'source_id':original['id']}]
             result=app.reference_sources(q['id'],selections*2)
@@ -46,7 +48,8 @@ class SourceReuseTest(unittest.TestCase):
             from unittest.mock import patch
             with patch('vision_api.call',side_effect=AssertionError('unexpected API')):
                 reused=app.understand(q['id'],False)
-                self.assertEqual(reused['claims'][0]['source_id'],linked['id'])
+                self.assertNotIn('claims',reused)
+                self.assertEqual(reused['references'],[linked['id'],{'source_id':linked['id'],'image_position':0}])
 
     def test_missing_or_forged_batch_does_not_partially_import(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -56,3 +59,23 @@ class SourceReuseTest(unittest.TestCase):
             with self.assertRaises(Problem):
                 app.reference_sources(q['id'],[{'product_id':p['id'],'source_id':source['id']},{'product_id':q['id'],'source_id':source['id']}])
             self.assertEqual(app.store.all('source',q['id']),[])
+
+    def test_shared_product_source_and_knowledge_commit_together(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app=Workbench(Path(folder),executor=False)
+            owner=app.create_product('Owner');child=app.create_product('Child');origin=app.create_product('Origin')
+            for product in (owner,origin):
+                product['profile']={'understood_at':'today','appearance':[product['name']]}
+                app.store.put('product','root',product)
+            app.reference_knowledge(child['id'],[owner['id']])
+            source=app.store.put('source',origin['id'],{'name':'New','kind':'link','status':'understood'})
+            selection=[{'product_id':origin['id'],'source_id':source['id']}]
+            with app.store.db() as db:
+                db.execute("""CREATE TRIGGER fail_profile BEFORE INSERT ON objects WHEN new.kind='product'
+                              BEGIN SELECT RAISE(ABORT,'profile failed'); END""")
+            with self.assertRaises(sqlite3.IntegrityError):app.reference_sources(child['id'],selection)
+            self.assertEqual([s['kind'] for s in app.store.all('source',child['id'])],['knowledge'])
+            with app.store.db() as db:db.execute('DROP TRIGGER fail_profile')
+            app.reference_sources(child['id'],selection)
+            for p in (owner,child):
+                self.assertEqual(app.product(p['id'])['profile']['appearance'],['Owner','Origin'])

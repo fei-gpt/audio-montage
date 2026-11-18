@@ -15,6 +15,7 @@ from montage import (read, save, fingerprint, probe, media_duration, check_segme
                      phrases, export_srt, init, number)
 
 API = 'https://api.elevenlabs.io/v1/'
+PENDING_REQUEST = '此请求已有尝试记录但无完整结果，可能仍在生成或已计费。请先核查 ElevenLabs；确认需要重试后，再手动归档 request.json。'
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -34,7 +35,9 @@ def request(root, endpoint, fields, audio, allow_paid, api_key_value=None):
     if not allow_paid:
         raise ValueError('新请求将向 ElevenLabs 发送文稿或音频并可能计费；明确接受后添加 --allow-paid。未发送请求。')
     if receipt.exists():
-        raise ValueError('此请求已有尝试记录但无完整结果，可能已计费；请先核查 ElevenLabs，再手动归档 request.json 后重试。')
+        if result_path.exists():
+            return read(result_path), digest
+        raise ValueError(PENDING_REQUEST)
     key = api_key_value or os.environ.get('ELEVENLABS_API_KEY')
     if not key:
         raise ValueError('请设置 ELEVENLABS_API_KEY 环境变量，不要把密钥写入项目')
@@ -49,7 +52,14 @@ def request(root, endpoint, fields, audio, allow_paid, api_key_value=None):
         body, content_type = b''.join(chunks), 'multipart/form-data; boundary=' + boundary
     else:
         body, content_type = json.dumps(fields).encode(), 'application/json'
-    save(receipt, {'signature': signature, 'status': 'attempted', 'automatic_retry': False})
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        with receipt.open('x', encoding='utf-8') as stream:
+            json.dump({'signature': signature, 'status': 'attempted', 'automatic_retry': False}, stream)
+    except FileExistsError:
+        if result_path.exists():
+            return read(result_path), digest
+        raise ValueError(PENDING_REQUEST) from None
     req = urllib.request.Request(API + endpoint, data=body,
                                  headers={'xi-api-key': key, 'Content-Type': content_type})
     try:

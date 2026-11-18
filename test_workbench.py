@@ -30,6 +30,80 @@ class WorkbenchTest(unittest.TestCase):
         with self.assertRaises(Problem):self.app.store.get('asset',a['id'],self.b['id'])
         with self.assertRaises(Problem):self.app.media(self.p['id'],self.b['id'],'asset',a['id'],self.app.media_signature(self.p['id'],self.b['id'],'asset',a['id']))
         with self.assertRaises(Problem):self.app.export(self.p['id'],self.b['id'],['nonexistent'])
+
+    def test_product_rename_preserves_shared_editing_rules_and_refreshes_builtin_template(self):
+        app=self.app
+        owner=app.create_product('lightplay')
+        owner['profile']={'understood_at':'today'}
+        app.store.put('product','root',owner)
+        alias=app.create_product('Shop B')['id']
+        app.reference_knowledge(alias,[owner['id']])
+        app.save_editing_guidelines(alias,'同一种展示最多连续三镜')
+        for pid in (alias,owner['id']):
+            app.update_product(pid,{'name':'Renamed '+pid[:4]})
+        for pid in (alias,owner['id']):
+            self.assertTrue(app.editing.light_sword_rhythm({'product_id':pid}))
+            self.assertTrue(app.product(pid)['recognition_template_ready'])
+            self.assertEqual(app.product(pid)['editing_guidelines'],'同一种展示最多连续三镜')
+        vivi=app.create_product('meetokivivi')['id']
+        # Simulate an older version that persisted a generated baseline during a metadata edit.
+        app.store.put('product','root',app.product(vivi))
+        app.update_product(vivi,{'name':'Vivi 新名称'})
+        self.assertTrue(app.product(vivi)['sentence_editing_only'])
+        self.assertTrue(app.product(vivi)['recognition_template_ready'])
+
+    def test_removed_category_stays_in_history_but_not_new_plans(self):
+        a=self.attach(kind='prepared');p,w=self.p['id'],self.w['id']
+        self.app.update_product(p,{'name':'lightplay'})
+        self.app.save_shot_categories(p,'旋转\n静态')
+        self.app.confirm_asset_category(p,w,a['id'],['旋转','静态'])
+        self.app.rename_shot_category(p,'旋转','转动')
+        self.app.save_shot_categories(p,'转动')
+        row,=self.app.editing.candidates(p,w,use_prepared_files=True)
+        self.assertEqual(row['confirmed_categories'],['转动'])
+        self.assertEqual(self.app.store.get('asset',a['id'],w)['user_category']['labels'],['旋转','静态'])
+        self.app.save_shot_categories(p,'转动\n旋转')
+        row,=self.app.editing.candidates(p,w,use_prepared_files=True)
+        self.assertEqual(row['confirmed_categories'],['转动'])
+        self.app.confirm_asset_category(p,w,a['id'],['旋转'])
+        row,=self.app.editing.candidates(p,w,use_prepared_files=True)
+        self.assertEqual(row['confirmed_categories'],['旋转'])
+
+    def test_migration_is_atomic_and_separates_legacy_product_records(self):
+        old={'products':[{'id':'a','name':'A'},{'id':'b','name':'B'}],
+             'tasks':[{'id':'tb','productId':'b'}],
+             'exports':[{'name':'unknown'},{'name':'A','productId':'a'},{'name':'B','taskId':'tb'}]}
+        app=self.app
+        with app.store.db() as db:
+            db.execute("""CREATE TRIGGER fail_import BEFORE INSERT ON objects WHEN new.kind='migration'
+                          BEGIN SELECT RAISE(ABORT,'migration failed'); END""")
+        with self.assertRaises(sqlite3.IntegrityError):app.migrate(old)
+        self.assertEqual(app.store.all('product','root'),[self.p])
+        with app.store.db() as db:db.execute('DROP TRIGGER fail_import')
+        created=app.migrate(old)['products']
+        self.assertTrue(app.migrate(old)['already_imported'])
+        def exports(app):
+            return [[e['name'] for e in app.store.all('workspace',pid)[0]['legacy_snapshot']['exports']] for pid in created]
+        self.assertEqual(exports(app),[['A'],['B']])
+        record,=app.store.all('migration','root')
+        self.assertEqual(record['snapshot'],old)
+        # Previously imported copies are corrected from the original backup at startup.
+        record.pop('scoped_snapshots');app.store.put('migration','root',record)
+        for pid in created:
+            ws,=app.store.all('workspace',pid);ws['legacy_snapshot']['exports']=old['exports']
+            app.store.put('workspace',pid,ws)
+        self.assertEqual(exports(Workbench(app.root,executor=False)),[['A'],['B']])
+
+    def test_rejected_knowledge_job_is_resumable(self):
+        from concurrent.futures import ThreadPoolExecutor
+        p=self.p['id']
+        with ThreadPoolExecutor() as stopped:pass
+        with patch.object(self.app,'pool',stopped),patch('shutil.which',return_value='codex'):
+            job=self.app.create_job(p,None,'understand',True)
+            self.assertEqual(job['status'],'interrupted')
+            self.assertEqual(self.app.resume(p,None,job['id'],True)['status'],'interrupted')
+        with patch('shutil.which',return_value='codex'):
+            self.assertEqual(self.app.resume(p,None,job['id'],True)['status'],'queued')
     def test_folder_parent_child_symlink_and_hardlink_rejected(self):
         self.attach()
         for path in [self.a_dir,self.root,self.a_dir/'sub']:
@@ -66,6 +140,45 @@ class WorkbenchTest(unittest.TestCase):
             self.assertEqual(os.environ['VISION_API_KEY'],'$(touch bad)')
         with self.assertRaises(Problem):self.app.set_config({'base_url':'https://api.deepseek.com','model':'deepseek-reasoner'})
 
+    def test_returning_identical_file_preserves_review_but_replacement_requires_new_confirmation(self):
+        a=self.attach(kind='prepared');p,w=self.p['id'],self.w['id']
+        product=self.app.store.get('product',p,'root')
+        self.app.store.put('product','root',dict(product,shot_categories=['展示']))
+        self.app.confirm_asset_category(p,w,a['id'],['展示'])
+        shot=self.app.store.put('shot',w,{'asset_id':a['id'],'asset_sha256':a['sha256'],'human_confirmed':True})
+        file=Path(a['path']);file.unlink();self.app.scan(p,w)
+        shutil.copyfile(self.video,file)
+        restored=self.app.scan(p,w)['assets'][0]
+        self.assertTrue(restored['user_category']['confirmed'])
+        self.assertEqual(restored['version'],a['version'])
+        self.assertFalse(self.app.store.get('shot',shot['id'],w).get('stale'))
+        with file.open('ab') as stream:stream.write(b'new version')
+        replaced=self.app.scan(p,w)['assets'][0]
+        self.assertNotIn('user_category',replaced)
+        self.assertTrue(self.app.store.get('shot',shot['id'],w)['stale'])
+        with self.assertRaisesRegex(Problem,'版本已变化'):
+            self.app.confirm_asset_category(p,w,a['id'],['展示'],expected_sha=a['sha256'])
+        self.app.confirm_asset_category(p,w,a['id'],['展示'],expected_sha=replaced['sha256'])
+
+    def test_scan_reads_catalog_once_and_rejects_cross_account_hardlinks(self):
+        self.attach(self.b,path=self.b_dir)
+        os.link(self.b_dir/'same.mp4',self.a_dir/'other-account.mp4')
+        self.app.attach_library(self.p['id'],self.w['id'],str(self.a_dir),'prepared')
+        for number in range(4):
+            shutil.copyfile(self.video,self.a_dir/f'{number}.mp4')
+        with patch.object(self.app.store,'all',wraps=self.app.store.all) as calls:
+            result=self.app.scan(self.p['id'],self.w['id'])
+        self.assertEqual(result['count'],5)
+        self.assertEqual(len(result['errors']),1)
+        self.assertIn('另一账号',result['errors'][0]['error'])
+        self.assertEqual(sum(c.args[0]=='asset' for c in calls.call_args_list),1)
+
+    def test_machine_recognition_paused_by_default(self):
+        with self.assertRaisesRegex(Problem,'素材机器识别已暂停'):
+            self.app.create_job(self.p['id'],self.w['id'],'organize',True)
+        self.assertEqual(self.app.store.all('job',self.w['id']),[])
+
+    @patch.object(Workbench,'asset_recognition_enabled',True)
     def test_analysis_modes_and_explicit_reanalysis_are_preserved(self):
         self.attach()
         simple=self.app.create_job(self.p['id'],self.w['id'],'organize',False,analysis_mode='simple')
@@ -81,6 +194,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual(self.app.product(self.p['id'])['analysis_mode'],'standard')
         with self.assertRaises(Problem):self.app.create_job(self.p['id'],self.w['id'],'organize',False,analysis_mode='invalid')
 
+    @patch.object(Workbench,'asset_recognition_enabled',True)
     def test_no_config_does_not_call_model_or_fake_completion(self):
         self.attach()
         self.app.set_config({'provider':'codex','model':'gpt-6-luna'})
@@ -118,9 +232,11 @@ class WorkbenchTest(unittest.TestCase):
         with patch('vision_api.call',return_value=answer):profile=self.app.understand(self.p['id'],True)
         self.assertEqual(profile['sources'][0]['id'],source['id']);self.assertEqual(self.app.store.get('source',source['id'],self.p['id'])['status'],'understood')
         self.app.store.put('source',self.p['id'],{'kind':'link','name':'new reference','text':'new information','status':'awaiting_understanding'})
-        answer=dict(answer,claims=[{'text':'捏造来源','source_id':'missing'}])
+        self.assertFalse({'claims','unknowns','conflicts'}.intersection(profile))
+        answer=dict(answer,references=[{'source_id':'missing'}])
         with patch('vision_api.call',return_value=answer),self.assertRaises(Problem):self.app.understand(self.p['id'],True)
 
+    @patch.object(Workbench,'asset_recognition_enabled',True)
     def test_public_reference_text_and_no_paid_consent(self):
         from email.message import Message
         from workbench.backend import fetch_reference
@@ -139,6 +255,7 @@ class WorkbenchTest(unittest.TestCase):
             with self.assertRaises(Problem):validate_reference_url(url)
         with patch('socket.getaddrinfo',return_value=[(2,1,6,'',('127.0.0.1',443))]):
             with self.assertRaises(Problem):validate_reference_url('https://www.amazon.com/x')
+    @patch.object(Workbench,'asset_recognition_enabled',True)
     def test_real_raw_pipeline_review_and_export(self):
         self.attach();self.app.set_config({'base_url':'http://127.0.0.1:9999/v1','model':'fake-vision','api_key_env':'WB_TEST_KEY'})
         base={'content_legibility':'pass','temporal_integrity':'pass','technical_usability':'pass','evidence_sufficiency':'pass'}
@@ -155,7 +272,17 @@ class WorkbenchTest(unittest.TestCase):
         with self.assertRaises(Problem):self.app.export(self.p['id'],self.w['id'],[shot['id']])
         self.app.review(self.p['id'],self.w['id'],shot['id'],{'decision':'keep','content_confirmed':True})
         result=self.app.export(self.p['id'],self.w['id'],[shot['id']]);self.assertTrue(Path(result['files'][0]['path']).is_file())
+        out=Path(result['files'][0]['path'])
+        before=list(out.parent.parent.iterdir())
+        with patch('video_document.write_document',side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):self.app.export(self.p['id'],self.w['id'],[shot['id']])
+        self.assertEqual(list(out.parent.parent.iterdir()),before)
+        out.write_bytes(b'other file')
+        media_id=result['id']+'-0'
+        with self.assertRaisesRegex(Problem,'已变化'):
+            self.app.media(self.p['id'],self.w['id'],'export',media_id,self.app.media_signature(self.p['id'],self.w['id'],'export',media_id))
         with self.assertRaises(Problem):self.app.export(self.p['id'],self.b['id'],[shot['id']])
+    @patch.object(Workbench,'asset_recognition_enabled',True)
     def test_prepared_clips_remain_whole(self):
         self.attach(kind='prepared');self.app.set_config({'base_url':'http://localhost:9999/v1','model':'fake','api_key_env':'WB_TEST_KEY'})
         def model(config,prompt,evidence,cache,allow):
@@ -175,6 +302,21 @@ class HTTPIsolationTest(unittest.TestCase):
         if token:headers['X-Workbench-Token']=self.server.token
         if origin:headers['Origin']=origin
         return urllib.request.urlopen(urllib.request.Request(self.url+path,data=json.dumps(body).encode() if body is not None else None,headers=headers),timeout=5)
+    def test_browser_compression_preserves_full_state_and_small_poll_responses(self):
+        import gzip
+        self.server.app.store.put('product','root',{'name':'Large','extra_request':'long text '*12000})
+        def state(encoding,path='/api/state?view=workbench'):
+            req=urllib.request.Request(self.url+path,headers={'Accept-Encoding':encoding,'X-Workbench-Token':self.server.token})
+            with urllib.request.urlopen(req) as response:return response.headers,response.read()
+        headers,compressed=state('gzip, deflate')
+        self.assertEqual(headers.get('Content-Encoding'),'gzip')
+        headers,plain=state('gzip;q=0')
+        self.assertIsNone(headers.get('Content-Encoding'))
+        self.assertEqual(json.loads(gzip.decompress(compressed)),json.loads(plain))
+        headers,unchanged=state('gzip','/api/state?view=workbench&since='+json.loads(plain)['revision'])
+        self.assertIsNone(headers.get('Content-Encoding'))
+        self.assertEqual(json.loads(unchanged),{'unchanged':True})
+
     def test_api_token_origin_and_cross_product(self):
         for token,origin in [(False,None),(True,'https://evil.test')]:
             with self.assertRaises(urllib.error.HTTPError) as cm:self.request('/api/state',token=token,origin=origin)
@@ -184,6 +326,29 @@ class HTTPIsolationTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:self.request(f"/api/products/{q['id']}/workspaces/{w['id']}/scan",{})
         self.assertEqual(cm.exception.code,404)
         with self.assertRaises(urllib.error.HTTPError):self.request('/%2e%2e/backend.py',token=False)
+    def test_background_poll_skips_unchanged_state_and_observes_writes(self):
+        full=json.load(self.request('/api/state'))
+        query='/api/state?since='+full['revision']
+        with patch.object(self.server.app.store,'all',side_effect=AssertionError('unnecessary catalog read')):
+            self.assertEqual(json.load(self.request(query)),{'unchanged':True})
+        product=json.load(self.request('/api/products',{'name':'New'}))
+        changed=json.load(self.request(query))
+        self.assertNotEqual(changed['revision'],full['revision'])
+        self.assertEqual(changed['products'][0]['id'],product['id'])
+        json.load(self.request('/api/generation/settings',{'duration':8}))
+        changed=json.load(self.request('/api/state?since='+changed['revision']))
+        self.assertEqual(changed['generation_config']['duration'],8)
+        app=self.server.app
+        w=app.create_workspace(product['id'],'workspace')
+        details={'display_categories':['旋转'],'light_sword':{'evidence':'灯光变化'},'other':'full observation'}
+        app.store.put('shot',w['id'],{'asset_id':'a','facts':'full facts','visual_details':details})
+        def shot(state):return state['products'][0]['workspaces'][0]['shots'][0]
+        summary=json.load(self.request('/api/state?view=workbench'))
+        self.assertNotIn('facts',shot(summary))
+        self.assertEqual(shot(summary)['visual_details']['light_sword'],details['light_sword'])
+        self.assertEqual(shot(json.load(self.request('/api/state?since='+summary['revision'])))['facts'],'full facts')
+        with patch.object(app,'asset_recognition_enabled',True):
+            self.assertEqual(shot(json.load(self.request('/api/state?view=workbench')))['visual_details'],details)
     def test_media_range_and_account_forgery(self):
         a=self.server.app;p=a.create_product('P');w=a.create_workspace(p['id'],'A');b=a.create_workspace(p['id'],'B')
         folder=Path(self.tmp.name)/'media';folder.mkdir();file=folder/'x.mp4';file.write_bytes(b'0123456789')

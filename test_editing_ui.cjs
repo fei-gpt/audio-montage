@@ -20,6 +20,20 @@ assert.ok(!elements['#main'].innerHTML.includes('<video'));assert.ok(elements['#
 console.log('Editing pagination (123 tasks), compact list and lazy video loading passed');
 let modal='';context.dialog=(title,html)=>{modal=html};context.wb=()=>'/account';
 vm.runInContext(fs.readFileSync('workbench/static/generation.js','utf8'),context);
+context.location.hash='#generation';
+assert.equal(context.activeModule(),'generation');
+context.generationHome();
+assert.ok(elements['#main'].innerHTML.includes('id="generationProduct"'));
+const generationPageHTML=elements['#main'].innerHTML;
+assert.ok(generationPageHTML.includes('id="generationCreate"'));
+assert.ok(generationPageHTML.includes('generationReferenceImages'));
+assert.ok(generationPageHTML.includes('generationReferenceAudio'));
+assert.match(generationPageHTML,/<textarea name="manuscript"[^>]* required>/);
+for(const removed of ['id="newGeneration"','name="brief"','generationManuscriptFile','generationReferenceVideos','generationFirstFrame'])
+  assert.ok(!generationPageHTML.includes(removed));
+context.editingHome();
+assert.ok(!elements['#main'].innerHTML.includes('id="generationCreate"'));
+context.location.hash='#editing';
 context.generationSettings({voiceOnly:true});
 assert.ok(modal.includes('name="elevenlabs_api_key"'));
 assert.ok(modal.includes('name="tts_model"'));
@@ -27,6 +41,9 @@ assert.ok(!modal.includes('name="dreamina_bin"'));
 assert.ok(!modal.includes('name="codex_bin"'));
 context.generationSettings();
 assert.ok(modal.includes('name="dreamina_bin"'));
+assert.ok(!modal.includes('name="elevenlabs_api_key"'));
+assert.ok(!modal.includes('name="voice_id"'));
+assert.ok(!modal.includes('name="tts_model"'));
 assert.ok(modal.includes('id="copyDreaminaLogin"'));
 const gen={id:'g',brief:'toy demo',stage:'stage',status:'video_pending',submit_id:'external'};
 workspace.generations=[gen];context.generationDetail('g');
@@ -36,6 +53,14 @@ assert.ok(modal.includes('generationApprove'));assert.ok(modal.includes('generat
 assert.ok(!context.generationSection().includes('<video'));
 gen.status='needs_attention';gen.intro_approval={sha256:'hash'};context.generationDetail('g');
 assert.ok(modal.includes('generationResume'));assert.ok(!modal.includes('id="generationPoll"'));
+let openEdit;
+elements['#generationOpenEdit'].addEventListener=(event,handler)=>{openEdit=handler};
+elements['#dialog']=element();elements['#dialog'].close=()=>{};
+gen.editing_batch_id='batch';context.location.hash='#generation';
+context.generationDetail('g');openEdit();
+assert.equal(context.location.hash,'editing');
+assert.equal(context.currentEditBatch().id,'batch');
+context.location.hash='#editing';
 console.log('AI generation UI confirmation gate, pending-query and continuation recovery passed');
 
 workspace.shots=[];workspace.assets=[];
@@ -131,6 +156,53 @@ context.editOperation('resume','6').then(async()=>{
   assert.equal(retryRequest.method,'POST');
   assert.equal(JSON.stringify(retryRequest.body.task_ids),'["6"]');
   assert.equal(context.currentEditBatch().id,'batch');
+  const batch=context.currentEditBatch(),savedTasks=batch.tasks;
+  batch.tasks=[{id:'new',status:'ready'},{id:'pending',status:'planned',plan:{}},
+    {id:'viewed',status:'awaiting_review',plan:{},preview:{}}];
+  await context.editOperation('plan');
+  assert.deepEqual(Array.from(retryRequest.body.task_ids),['new']);
+  await context.editOperation('preview');
+  assert.deepEqual(Array.from(retryRequest.body.task_ids),['pending']);
+  batch.rules.matching_mode='semantic';
+  batch.tasks=[
+    {id:'paused',status:'paused',operation:'preview',plan:{}},
+    {id:'interrupted',status:'interrupted',operation:'output',plan:{}},
+    {id:'failed',status:'needs_attention',operation:'plan'},
+    {id:'cancelled',status:'cancelled'},
+    {id:'review',status:'awaiting_review',plan:{},preview:{}}
+  ];
+  const controls=context.editingHistory([batch],batch,context.editingRows(batch.tasks,1));
+  assert.ok(controls.includes('data-edit-batch-action="continue-stopped"'));
+  assert.ok(controls.includes('data-edit-retry="paused"'));
+  assert.ok(!controls.includes('data-edit-retry="cancelled"'));
+  await context.editOperation('continue-stopped');
+  assert.deepEqual(Array.from(retryRequest.body.task_ids),['paused','interrupted']);
+  assert.equal(retryRequest.url,'/account/editing/batches/batch/resume');
+  assert.equal(retryRequest.body.allow_paid,false);
+  context.state.capabilities={config:{model:'mock'}};
+  const previousRequest=retryRequest;
+  context.editOperation('resume');
+  assert.equal(retryRequest,previousRequest);
+  assert.ok(modal.includes('id="editPaid"'));
+  elements['#editPaid']=Object.assign(element(),{checked:true});
+  elements['#editGo'].onclick();
+  assert.deepEqual(Array.from(retryRequest.body.task_ids),['failed']);
+  assert.equal(retryRequest.body.allow_paid,true);
+  batch.rules.matching_mode='duration';
+  const stale={id:'stale',name:'素材替换测试',status:'awaiting_review',stage:'预览已生成',
+    source_warning:'素材版本无法与剪辑方案核对，请重新选片并预览：视频078.mp4',
+    plan:{parts:[]},preview:{media_url:'/old-preview'}};
+  batch.tasks=[stale];
+  const staleControls=context.editingHistory([batch],batch,context.editingRows(batch.tasks,1));
+  assert.ok(staleControls.includes('视频078.mp4'));
+  assert.ok(staleControls.includes('查看旧预览'));
+  assert.ok(staleControls.includes('data-edit-regenerate="stale"'));
+  assert.ok(!staleControls.includes('data-edit-review="stale"'));
+  context.editTaskDialog('stale');
+  assert.match(modal,/id="editFinal" disabled/);
+  assert.ok(modal.includes('id="editReselect"'));
+  assert.ok(modal.includes('src="/old-preview"'));
+  batch.tasks=savedTasks;
   console.log('Editing retry keeps the selected history record and task');
   const calls=[];
   context.api=(url,method,body)=>{
@@ -163,4 +235,108 @@ context.editOperation('resume','6').then(async()=>{
   assert.equal(calls[1].body.variant_count,1);
   assert.equal(calls[2].url,'/account/editing/batches/from-narrations/plan');
   console.log('Generated narrations submit as a single batch without uploading audio');
+  const field={value:'00:00:11:00 必须用静态展示'},result={},check={},filled={};
+  const editor={
+    parentElement:{querySelector:()=>({value:'one'})},
+    querySelector:key=>({'textarea':field,'[data-individual-result]':result,'[data-check-individual]':check,
+      '[data-individual-filled]':filled}[key])
+  };
+  elements['#editGeneratedNarrations'].querySelectorAll=key=>key==='[data-individual-editor]'?[editor]:[];
+  const values={matching_mode:'duration',mode:'preview',length_mode:'custom',target_duration:'16',history_music_id:'shared-music'};
+  context.FormData=class {
+    constructor(){this.values={...values};}
+    get(name){return this.values[name]??null;}
+    has(){return false;}
+  };
+  const requests=[];
+  let finishCheck;
+  context.api=(url,method,body)=>{
+    requests.push({url,body});
+    if(url.endsWith('/inspect'))return new Promise(resolve=>{finishCheck=resolve});
+    if(url==='/api/editing-modes')return {modes:['duration']};
+    if(url.endsWith('/editing/batches'))return {id:'saved'};
+  };
+  const matching=elements['[name="matching_mode"]'],lengthMode=elements['[name="length_mode"]'];
+  matching.value='duration';lengthMode.value='custom';
+  context.editBatchDialog(false,['one']);
+  const outdated=check.onclick();
+  await new Promise(setImmediate);
+  assert.equal(requests.at(-1).body.target_duration,16);
+  assert.equal(requests.at(-1).body.music_id,'shared-music');
+  elements['[name="request"]'].value='最后一镜优先用静态展示';
+  elements['[name="request"]'].oninput();
+  finishCheck({requirements:[]});
+  await outdated;
+  assert.equal(result.textContent,'');
+  let uploads=0,finishUpload,activeAccount='/account';
+  context.editUploadFile=(file,kind,scope)=>{
+    uploads++;
+    assert.equal(kind,'music');assert.equal(scope,'/account');
+    return new Promise(resolve=>{finishUpload=resolve});
+  };
+  context.wb=()=>activeAccount;
+  elements['#editMusic'].files=[{name:'local.mp3'}];
+  values.length_mode=lengthMode.value='music';lengthMode.onchange();
+  const checking=check.onclick();
+  const submitting=elements['#editCreate'].onsubmit({preventDefault(){}});
+  await new Promise(setImmediate);
+  assert.equal(uploads,1);
+  activeAccount='/different-account';
+  finishUpload({id:'local-music'});
+  await submitting;
+  finishCheck({requirements:[]});await checking;
+  for(const {url,body} of requests.filter(r=>r.body?.follow_music)){
+    assert.ok(url.startsWith('/account/'));assert.equal(body.music_id,'local-music');
+  }
+  assert.equal(requests.filter(r=>r.body?.follow_music).length,2);
+  assert.equal(requests.at(-1).url,'/account/editing/batches/saved/plan');
+  matching.value=values.matching_mode='semantic';matching.onchange();
+  assert.equal(elements['#editTargetDuration'].hidden,true);
+  assert.equal(elements['[name="target_duration"]'].disabled,true);
+  assert.equal(result.textContent,'');
+  elements['#editMusic'].files=[];
+  await elements['#editCreate'].onsubmit({preventDefault(){}});
+  assert.equal(requests.at(-2).body.follow_music,undefined);
+  assert.equal(requests.at(-2).body.target_duration,undefined);
+  console.log('Inspection and submission share the timeline, pending music upload and original account');
+}).then(async()=>{
+  const fields={};
+  const field=id=>fields[id]??=(Object.assign(element(),{dataset:{},style:{},isConnected:true,value:''}));
+  const script=field('script');script.value='Keep this draft';
+  field('#narrationScripts').children=[{querySelector:selector=>selector==='textarea'?script:field(selector)}];
+  const voice=field('#narrationVoice'),configForm=field('#generationConfig');
+  configForm.elements={elevenlabs_api_key:field('key')};
+  let settingsBody={voice_id:'new',elevenlabs_api_key:'changed'},finishList=[],saving;
+  const state={generation_config:{elevenlabs_key_ready:true,voice_id:'old'}};
+  const voicePage={state,$:field,W:()=>workspace,wb:()=>'/account',esc:String,badge:String,dialog(){},
+    action:fn=>{saving=fn()},toast:message=>assert.fail(message),
+    FormData:class {constructor(){return Object.entries(settingsBody)}},
+    api:async(path,method,body)=>{
+      if(path==='/api/generation/settings')return {elevenlabs_key_ready:true,voice_id:body.voice_id};
+      assert.equal(path,'/api/generation/voices');
+      return new Promise(resolve=>finishList.push(resolve));
+    }};
+  vm.createContext(voicePage);
+  for(const file of ['narration','generation'])vm.runInContext(fs.readFileSync('workbench/static/'+file+'.js','utf8'),voicePage);
+  voicePage.bindNarrationForm(workspace,false);
+  finishList[0]({voices:[{id:'old',name:'Old'}]});await new Promise(setImmediate);
+  assert.equal(voice.value,'old');
+  voicePage.generationSettings({voiceOnly:true});
+  const openingList=field('#generationVoices').onclick();
+  await new Promise(setImmediate);
+  assert.equal(finishList.length,2);
+  assert.equal(voice.value,'');
+  assert.equal(field('#submitNarration').disabled,true);
+  settingsBody={voice_id:'latest',elevenlabs_api_key:''};
+  field('#dialog').close=()=>{configForm.isConnected=false};
+  configForm.onsubmit({preventDefault(){}});
+  await saving;
+  assert.equal(finishList.length,3);
+  finishList[2]({voices:[{id:'latest',name:'Latest'}]});await new Promise(setImmediate);
+  finishList[1]({voices:[{id:'new',name:'Earlier'}]});await openingList;
+  assert.equal(voice.value,'latest');
+  assert.equal(voice.disabled,false);
+  assert.equal(field('#submitNarration').disabled,false);
+  assert.equal(script.value,'Keep this draft');
+  console.log('Voice settings refresh the active batch and preserve its script');
 }).catch(error=>{console.error(error);process.exitCode=1});

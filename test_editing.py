@@ -1,5 +1,6 @@
 """Scoped editing acceptance with real local media and mocked semantic requests."""
 import io,json,shutil,tempfile,unittest
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 from montage import fingerprint,save
@@ -61,6 +62,134 @@ class EditingTest(unittest.TestCase):
         (self.library/self.short_clips[31].name).unlink()
         with self.assertRaisesRegex(ValueError,'90'):
             self.app.editing.validate_plan(b,task,self.proposal())
+
+    def test_validate_existing_plan_hashes_only_selected_footage(self):
+        edit=self.app.editing;w=self.w['id']
+        other=next(a for a in self.app.visible_assets(w) if a['id']!=self.asset['id'])
+        self.app.store.put('shot',w,dict(self.shot,id='other-shot',asset_id=other['id'],asset_sha256=other['sha256']))
+        batch=self.create();task=self.task(batch)
+        with patch('workbench.editing.fingerprint',wraps=fingerprint) as hashed:
+            edit.validate_plan(batch,task,self.proposal())
+        files=[Path(call.args[0]) for call in hashed.call_args_list]
+        self.assertIn(Path(self.asset['path']),files)
+        self.assertNotIn(Path(other['path']),files)
+        Path(self.asset['path']).write_bytes(b'replaced')
+        with self.assertRaisesRegex(ValueError,'当前可用素材'):
+            edit.validate_plan(batch,task,self.proposal())
+
+    def test_all_batch_creation_paths_publish_every_task_together(self):
+        edit,store=self.app.editing,self.app.store
+        p,w=self.p['id'],self.w['id']
+        narration=self.upload(self.audio,'narration')
+        reference=self.upload(self.intro,'reference')
+        old=edit.create(p,w,{'narrations':[{'id':narration['id']}],'rights_allowed':True})
+        source=store.put('edit_task',w,dict(self.task(old),status='planned',plan=self.proposal()))
+        for file in (self.inputs/'1.mp4',self.inputs/'1.mp3'):
+            shutil.copyfile(file,file.with_stem('2'))
+        pairs={'input_mode':'paired','input_path':str(self.inputs)}
+        pairs['pairing_snapshot']=edit.inspect_pairs(p,w,pairs)['snapshot']
+        root=edit.folder(w,old['id']).parent
+        creators={
+            'narration':lambda:edit.create(p,w,{'narrations':[{'id':narration['id']}],'variant_count':5})['id'],
+            'silent reference':lambda:edit.create(p,w,{'reference_id':reference['id'],'variant_count':5})['id'],
+            'folder pairs':lambda:edit.create(p,w,pairs)['id'],
+            'regeneration':lambda:edit.action(p,w,old['id'],'regenerate',{'task_ids':[source['id']],'variant_count':5})['id'],
+        }
+        for entry,create in creators.items():
+            with self.subTest(entry=entry):
+                prior=(edit.list(p,w),set(root.iterdir()),store.all('edit_task',w))
+                version=store.revision
+                with store.db() as db:
+                    db.execute("""CREATE TRIGGER fail_second_task BEFORE INSERT ON objects
+                        WHEN new.kind='edit_task' AND EXISTS (SELECT 1 FROM objects WHERE kind='edit_task'
+                        AND json_extract(body,'$.batch_id')=json_extract(new.body,'$.batch_id'))
+                        BEGIN SELECT RAISE(ABORT,'second task'); END""")
+                try:
+                    with self.assertRaisesRegex(sqlite3.IntegrityError,'second task'):create()
+                finally:
+                    with store.db() as db:db.execute('DROP TRIGGER fail_second_task')
+                self.assertEqual(store.revision,version)
+                self.assertEqual(prior,(edit.list(p,w),set(root.iterdir()),store.all('edit_task',w)))
+                bid=create()
+                tasks=edit.tasks(w,bid)
+                self.assertEqual(len(tasks),2 if entry=='folder pairs' else 5)
+                if entry=='silent reference':
+                    self.assertTrue(all(Path(t['audio']).is_file() for t in tasks))
+        self.assertEqual(store.get('edit_task',source['id'],w),source)
+
+    def test_group_state_changes_are_atomic_and_cancelled_tasks_stay_closed(self):
+        edit,store=self.app.editing,self.app.store
+        p,w=self.p['id'],self.w['id']
+        voice=self.upload(self.audio,'narration')
+        b=edit.create(p,w,{'narrations':[{'id':voice['id']}],'variant_count':5})
+        bid=b['id'];cancelled=edit.tasks(w,bid)[0]['id']
+        edit.action(p,w,bid,'cancel',{'task_ids':[cancelled]})
+        closed=store.get('edit_task',cancelled,w)
+        for operation,status in [('pause','paused'),('resume','queued'),('cancel','cancelled')]:
+            before=edit.tasks(w,bid)
+            # Interrupt one of the four active tasks after an earlier update in this transaction.
+            with store.db() as db:
+                db.execute(f"""CREATE TRIGGER fail_update BEFORE INSERT ON objects
+                    WHEN new.kind='edit_task' AND new.id='{before[3]['id']}' AND json_extract(new.body,'$.status')='{status}'
+                    BEGIN SELECT RAISE(ABORT,'state change'); END""")
+            try:
+                with self.assertRaisesRegex(sqlite3.IntegrityError,'state change'):edit.action(p,w,bid,operation,{})
+            finally:
+                with store.db() as db:db.execute('DROP TRIGGER fail_update')
+            self.assertEqual(edit.tasks(w,bid),before)
+            edit.action(p,w,bid,operation,{})
+            self.assertEqual(store.get('edit_task',cancelled,w),closed)
+            self.assertTrue(all(t['status']==status for t in edit.tasks(w,bid) if t['id']!=cancelled))
+
+    def test_pause_and_resume_preserve_tasks_already_waiting_for_review(self):
+        edit,store=self.app.editing,self.app.store
+        p,w=self.p['id'],self.w['id'];voice=self.upload(self.audio,'narration')
+        b=edit.create(p,w,{'narrations':[{'id':voice['id']}],'variant_count':5})
+        live,*idle=edit.tasks(w,b['id'])
+        saved=[]
+        for t,status in zip(idle,['awaiting_review','planned','completed','invalid']):
+            saved.append(store.put('edit_task',w,dict(t,status=status)))
+        for operation,expected in [('pause','paused'),('resume','queued')]:
+            edit.action(p,w,b['id'],operation,{})
+            self.assertEqual(store.get('edit_task',live['id'],w)['status'],expected)
+            self.assertEqual([store.get('edit_task',t['id'],w) for t in saved],saved)
+
+    def test_executor_rejection_can_resume_in_original_record(self):
+        from concurrent.futures import ThreadPoolExecutor
+        edit=self.app.editing;b=self.create();p,w=self.p['id'],self.w['id']
+        task=self.task(b)
+        with ThreadPoolExecutor(max_workers=1) as stopped:pass
+        with patch.object(self.app,'pool',stopped):
+            self.assertEqual(edit.action(p,w,b['id'],'plan',{})['queued'],0)
+        self.assertEqual(self.task(b)['status'],'interrupted')
+        self.assertEqual(edit.action(p,w,b['id'],'resume',{})['queued'],1)
+        self.assertEqual(self.task(b)['id'],task['id'])
+        self.assertEqual(self.task(b)['operation'],'plan')
+
+    def test_previous_worker_cannot_claim_or_overwrite_requeued_task(self):
+        from workbench.editing import Stopped
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        edit=self.app.editing;batch=self.create()
+        p,w,bid=self.p['id'],self.w['id'],batch['id']
+        gate=threading.Barrier(2)
+        def submit():
+            gate.wait(timeout=5)
+            try:return edit.action(p,w,bid,'plan',{})['queued']
+            except Problem as exc:return exc.status
+        with ThreadPoolExecutor(2) as workers:
+            calls=[workers.submit(submit) for _ in range(2)]
+            self.assertEqual(sorted(call.result(timeout=10) for call in calls),[1,409])
+        old=self.task(batch)
+        edit.action(p,w,bid,'pause',{})
+        edit.action(p,w,bid,'resume',{})
+        new=self.task(batch)
+        with self.assertRaises(Stopped):edit.check_stop(old)
+        with patch.object(edit,'plan') as planner:
+            edit.run(p,w,bid,[old['id']],'plan',True,old['queue_attempt'])
+            planner.assert_not_called()
+        self.assertNotEqual(new['queue_attempt'],old['queue_attempt'])
+        self.assertEqual(self.task(batch),new)
     def create(self,**kw):return self.app.editing.create(self.p['id'],self.w['id'],dict(input_path=str(self.inputs),timing_confirmed=True,rights_allowed=True,**kw))
     def task(self,b):return self.app.editing.tasks(self.w['id'],b['id'])[0]
     def op(self,b,op,body=None):
@@ -119,6 +248,80 @@ class EditingTest(unittest.TestCase):
             edit.inspect_narration_request(p,w,{'id':first['id'],'request':'第一镜必须用不存在的类别'})
         with self.assertRaises(Problem):
             edit.inspect_narration_request(p,self.w2['id'],{'id':first['id'],'request':specific})
+
+    def test_batch_checks_each_narration_before_creating_any_task(self):
+        p,w=self.p['id'],self.w['id']
+        edit=self.app.editing
+        self.app.store.put('product','root',dict(self.app.product(p),shot_categories=['静态展示']))
+        first=self.upload(self.audio,'narration')
+        second=self.upload(self.audio,'narration')
+        self.app.store.put('edit_upload',w,dict(second,name='短配音.mp3',duration=1))
+        narrations=[{'id':first['id']},{'id':second['id']}]
+        for generated in (False,True):
+            if generated:
+                for item in (first,second):
+                    record=self.app.store.get('edit_upload',item['id'],w)
+                    self.app.store.put('edit_upload',w,dict(record,generated_narration=True))
+            with self.assertRaisesRegex(Problem,'第 2 条.*短配音.*成片起止之间'):
+                edit.create(p,w,{'narrations':narrations,'request':'00:00:01:15 必须用静态展示'})
+        narrations[1]['request']='第一镜必须用不存在的类别'
+        with self.assertRaisesRegex(Problem,'第 2 条.*未匹配到展示类别'):
+            edit.create(p,w,{'narrations':narrations})
+        with self.assertRaisesRegex(Problem,'10000'):
+            edit.create(p,w,{'narrations':[narrations[0]],'request':' '*10000+'x'})
+        self.assertFalse(self.app.store.all('edit_batch',w))
+        self.assertFalse(self.app.store.all('edit_task',w))
+        narrations[1]['request']='00:00:00:15 必须用静态展示'
+        batch=edit.create(p,w,{'narrations':narrations})
+        tasks=edit.tasks(w,batch['id'])
+        self.assertEqual(len(tasks),2)
+        short=next(t for t in tasks if t['name']=='短配音.mp3')
+        self.assertEqual(edit.task_batch(batch,short)['rules']['required_cut_frames'],[15])
+        narrations[1]['request']='画面柔和，按文案选片'
+        semantic=edit.create(p,w,{'narrations':narrations,'matching_mode':'semantic'})
+        short=next(t for t in edit.tasks(w,semantic['id']) if t['name']=='短配音.mp3')
+        self.assertEqual(edit.task_batch(semantic,short)['rules']['request'],narrations[1]['request'])
+
+    def test_inspection_and_planning_use_same_extended_timeline(self):
+        p,w=self.p['id'],self.w['id']
+        edit=self.app.editing
+        self.app.store.put('product','root',dict(self.app.product(p),shot_categories=['静态展示']))
+        voice=self.upload(self.audio,'narration')
+        self.app.store.put('edit_upload',w,dict(voice,generated_narration=True))
+        music=self.upload(self.audio,'music')
+        self.app.store.put('edit_upload',w,dict(music,duration=16))
+        text='00:00:11:00 必须用静态展示'
+        for length in ({'target_duration':16},{'follow_music':True}):
+            settings=dict(length,music_id=music['id'])
+            checked=edit.inspect_narration_request(p,w,dict(settings,id=voice['id'],request=text))
+            batch=edit.create(p,w,dict(settings,narrations=[{'id':voice['id'],'request':text}]))
+            self.assertEqual(checked['requirements'],edit.task_batch(batch,self.task(batch))['rules']['shot_requests'])
+            self.assertEqual(checked['requirements'][0]['frame'],330)
+        for settings in ({},{'target_duration':1,'music_id':music['id']},{'follow_music':True},
+                         {'follow_music':True,'music_id':voice['id']},
+                         {'follow_music':True,'music_id':self.upload(self.audio,'music',self.w2)['id']}):
+            with self.assertRaises(Problem):
+                edit.inspect_narration_request(p,w,dict(settings,id=voice['id'],request=text))
+
+    def test_common_exclusions_match_inspector_and_actual_selection(self):
+        p,w=self.p['id'],self.w['id'];edit=self.app.editing
+        product=self.app.store.get('product',p,'root')
+        self.app.store.put('product','root',dict(product,shot_categories=['主体展示','安装光剑','拆分光剑']))
+        upload=self.upload(self.audio,'narration')
+        self.app.store.put('edit_upload',w,dict(upload,generated_narration=True))
+        text='全片排除安装光剑+拆分光剑'
+        checked=edit.inspect_narration_request(p,w,{'id':upload['id'],'common':text})
+        batch=edit.create(p,w,{'narrations':[{'id':upload['id']}],'request':text,'rights_allowed':True})
+        self.assertEqual(batch['rules']['global_shot_requests'],checked['requirements'])
+        self.app.store.put('asset',w,dict(self.asset,user_category={'labels':['拆分光剑'],'confirmed':True}))
+        with self.assertRaisesRegex(ValueError,'排除的素材类别'):
+            edit.validate_plan(batch,self.task(batch),self.proposal())
+        preference='第一镜优先用主体展示，排除安装光剑+拆分光剑'
+        checked=edit.inspect_narration_request(p,w,{'id':upload['id'],'request':preference})
+        self.assertEqual(checked['requirements'][0]['excluded'],['安装光剑','拆分光剑'])
+        batch=edit.create(p,w,{'narrations':[{'id':upload['id']}],'request':preference,'rights_allowed':True})
+        with self.assertRaisesRegex(ValueError,'排除的素材类别'):
+            edit.validate_plan(batch,self.task(batch),self.proposal())
 
     def test_ten_generated_narrations_render_with_one_shared_background_track(self):
         import array
@@ -270,6 +473,7 @@ class EditingTest(unittest.TestCase):
             body=dict(task_ids=[t['id']],index=0,option=1,plan_revision=t['plan_revision'])
             changed=eng.action(p,w,b['id'],'replace-shot',body)
             self.assertNotIn('preview',changed);self.assertEqual(changed['plan']['parts'][0]['shot_id'],'alt')
+            self.assertEqual(changed['plan']['parts'][0]['asset_sha256'],asset['sha256'])
             self.assertEqual(changed['plan']['parts'][0]['frames'],60)
             with self.assertRaises(Problem):eng.action(p,w,b['id'],'replace-shot',body)
             self.op(b,'preview');self.assertEqual(self.task(b)['preview']['report']['body_seconds'],2)
@@ -387,6 +591,153 @@ class EditingTest(unittest.TestCase):
         with patch('vision_api.call',return_value=self.proposal()):self.op(b,'plan')
         t=self.task(b);self.assertEqual(t['status'],'completed',t.get('error'));self.assertFalse(t.get('human_reviewed',False))
 
+    def test_preview_replacement_and_history_deletion_keep_only_committed_media(self):
+        batch=self.create()
+        p,w=self.p['id'],self.w['id']
+        edit=self.app.editing
+        with patch('vision_api.call',return_value=self.proposal()):self.op(batch,'plan')
+        self.op(batch,'preview')
+        first=self.task(batch)
+        ident=first['id']+'-0'
+        old=edit.media(p,w,ident)
+        with patch('workbench.edit_media.render',side_effect=ValueError('encode failed')):
+            self.op(batch,'preview')
+        self.assertIn('encode failed',self.task(batch)['error'])
+        self.assertEqual(edit.media(p,w,ident),old)
+
+        self.op(batch,'preview')
+        second=edit.media(p,w,ident)
+        self.assertNotEqual(old,second)
+        self.assertFalse(old.exists())
+        edit.action(p,w,batch['id'],'save-plan',{'task_ids':[first['id']],'plan':self.proposal()})
+        self.assertFalse(second.exists())
+        self.op(batch,'preview')
+        latest=self.task(batch)['preview']
+        current=Path(latest['path'])
+        other=current.with_name('user-note.txt')
+        other.write_text('keep',encoding='utf-8')
+        with patch.object(self.app.store,'put_many',side_effect=sqlite3.OperationalError('commit failed')):
+            with self.assertRaises(sqlite3.OperationalError):
+                edit.action(p,w,batch['id'],'delete-record',{'delete_previews':True})
+        self.assertEqual(edit.media(p,w,ident),current)
+        for _ in range(2):
+            self.assertTrue(edit.action(p,w,batch['id'],'delete-record',{'delete_previews':True})['deleted'])
+        self.assertFalse(current.exists())
+        self.assertTrue(other.is_file())
+        self.assertTrue((self.inputs/'1.mp4').is_file())
+        self.assertEqual(edit.list(p,w),[])
+        for media_id in (ident,first['id']+'-'+latest['sha256']+'-0'):
+            with self.assertRaises(Problem) as error:edit.media(p,w,media_id)
+            self.assertEqual(error.exception.status,404)
+
+    def test_retired_preview_cleanup_resumes_after_a_file_lock(self):
+        batch=self.create()
+        t=self.task(batch)
+        p,w=self.p['id'],self.w['id']
+        edit=self.app.editing
+        root=edit.folder(w,batch['id'])/t['id']
+        old,current,changed=[root/('preview-'+letter*32)/'preview.mp4' for letter in 'abc']
+        for path,source in ((old,self.clip),(current,self.intro),(changed,self.intro)):
+            path.parent.mkdir(parents=True)
+            shutil.copyfile(source,path)
+        old_sha=fingerprint(old)
+        new_sha=fingerprint(current)
+        t.update(preview={'path':str(old),'sha256':old_sha},
+                 pending_media={'kind':'preview','media':{'path':str(current),'sha256':new_sha}})
+        with patch.object(Path,'unlink',side_effect=PermissionError('file in use')):
+            edit.finish_publication(t)
+        self.assertTrue(old.is_file())
+        saved=self.task(batch)
+        self.assertEqual(saved['retired_previews'],{str(old):old_sha})
+        self.assertEqual(edit.media(p,w,t['id']+'-'+new_sha+'-0'),current)
+        with self.assertRaises(Problem) as error:edit.media(p,w,t['id']+'-'+old_sha+'-0')
+        self.assertEqual(error.exception.status,404)
+        outside=self.inputs/'1.mp4'
+        saved['retired_previews'].update({str(changed):old_sha,str(outside):new_sha,str(current):new_sha})
+        self.app.store.put('edit_task',w,saved)
+        self.app=Workbench(self.root/'state',executor=False)
+        self.assertFalse(old.exists())
+        for path in (current,changed,outside):self.assertTrue(path.is_file())
+        self.assertNotIn('retired_previews',self.task(batch))
+        self.app.editing.action(p,w,batch['id'],'delete-record',{})
+        self.assertTrue(current.is_file())
+        with self.assertRaises(Problem) as error:self.app.editing.media(p,w,t['id']+'-0')
+        self.assertEqual(error.exception.status,404)
+
+    def test_restart_recovers_published_movie_without_rendering_again(self):
+        class ServiceStopped(BaseException):pass
+        b=self.create(mode='direct')
+        put=self.app.store.put
+        def stop_before_completed_record(kind,scope,record):
+            if kind=='edit_task' and record.get('status')=='completed':
+                raise ServiceStopped()
+            return put(kind,scope,record)
+        with patch('vision_api.call',return_value=self.proposal()),patch.object(self.app.store,'put',side_effect=stop_before_completed_record):
+            with self.assertRaises(ServiceStopped):self.op(b,'plan')
+        files=list(Path(b['output_path']).rglob('*.mp4'))
+        self.assertEqual(len(files),1)
+        self.app=Workbench(self.root/'state',executor=False)
+        t=self.task(b)
+        self.assertEqual(t['status'],'completed')
+        self.assertEqual(Path(t['output']['path']),files[0])
+        self.assertEqual(t['output']['sha256'],fingerprint(files[0]))
+        self.assertEqual(t['usage_sync']['errors'],[])
+        from workbench.usage import ledger
+        self.assertEqual(set(ledger(self.app.store)[self.asset['sha256']]),{t['id']})
+        with patch('workbench.edit_media.render',side_effect=AssertionError('already rendered')):self.op(b,'resume')
+        self.assertEqual(list(Path(b['output_path']).rglob('*.mp4')),files)
+
+    def test_same_batch_manual_change_between_planning_and_save(self):
+        edit=self.app.editing;p,w=self.p['id'],self.w['id']
+        first=self.upload(self.audio,'narration');second=self.upload(self.audio,'narration')
+        batch=edit.create(p,w,{'narrations':[{'id':first['id']},{'id':second['id']}],'rights_allowed':True})
+        one,two=edit.tasks(w,batch['id'])
+        alternative={'parts':[dict(self.proposal()['parts'][0],start=1)]}
+        def planned_before_manual_save(b,t,*args,**kwargs):
+            t['plan']=edit.validate_plan(b,t,self.proposal())
+            t['plan_revision']='first-revision'
+            edit.action(p,w,b['id'],'save-plan',{'task_ids':[two['id']],'plan':alternative})
+            return t
+        with patch.object(edit,'plan',side_effect=planned_before_manual_save),patch.object(edit,'timeline',return_value={'segments':[]}):
+            self.op(batch,'plan',{'task_ids':[one['id']]})
+        saved=self.app.store.get('edit_task',one['id'],w)
+        self.assertEqual(saved['status'],'needs_attention')
+        self.assertIn('本批素材不能重复',saved['error'])
+        self.assertNotIn('plan',saved)
+        self.assertEqual(self.app.store.get('edit_task',two['id'],w)['plan']['parts'][0]['start'],1)
+
+    def test_candidate_order_survives_out_of_order_updates(self):
+        p,w=self.p['id'],self.w['id'];edit=self.app.editing
+        voice=self.upload(self.audio,'narration')
+        batch=edit.create(p,w,{'narrations':[{'id':voice['id']}],'variant_count':5})
+        tasks=edit.tasks(w,batch['id'])
+        for task in reversed(tasks):self.app.store.put('edit_task',w,dict(task,status='planned'))
+        for rows in (edit.tasks(w,batch['id']),edit.list(p,w)[0]['tasks']):
+            self.assertEqual([task['variant'] for task in rows],list(range(1,6)))
+
+    def test_restart_checks_staged_preview_contents_before_recovering(self):
+        b=self.create();w=self.w['id'];edit=self.app.editing
+        for valid in (True,False):
+            task=self.task(b)
+            final=edit.folder(w,b['id'])/task['id']/('preview-'+str(valid))/'preview.mp4'
+            final.parent.mkdir(parents=True)
+            staged=final.with_name('.rendering.tmp')
+            shutil.copyfile(self.clip,staged)
+            media={'path':str(final),'sha256':fingerprint(staged),'report':{},'plan_revision':'rev'}
+            if not valid:staged.write_bytes(b'incomplete')
+            task.update(status='running',plan_revision='rev',pending_media={'kind':'preview','media':media})
+            self.app.store.put('edit_task',w,task)
+            self.app=Workbench(self.root/'state',executor=False)
+            recovered=self.task(b)
+            self.assertNotIn('pending_media',recovered)
+            if valid:
+                self.assertEqual(recovered['status'],'awaiting_review')
+                self.assertEqual(fingerprint(final),media['sha256'])
+            else:
+                self.assertEqual(recovered['status'],'interrupted')
+                self.assertFalse(final.exists())
+                self.assertFalse(staged.exists())
+
     def test_short_intro_audio_overhang_survives_the_cut(self):
         import array
         from workbench.edit_media import render
@@ -477,8 +828,9 @@ class EditingTest(unittest.TestCase):
         second=self.create(matching_mode='duration');task=self.task(second)
         other=dict(self.shot,id='alternative-shot',asset_sha256='different-source',start=0,end=2,frames=60,safe_trim_ranges=[],action_start=None,action_end=None)
         original=self.app.editing.candidates(self.p['id'],self.w['id'])
-        with patch.object(self.app.editing,'candidates',return_value=original+[other]),patch('vision_api.call',side_effect=AssertionError('no model')):
+        with patch.object(self.app.editing,'candidates',return_value=original+[other]),patch('vision_api.call',side_effect=AssertionError('no model')),patch.object(self.app.editing,'history',wraps=self.app.editing.history) as history:
             planned=self.app.editing.plan(second,task,False)
+        self.assertEqual(history.call_count,2)  # Search snapshot and fresh final validation.
         self.assertNotEqual(self.app.editing.visual_sequence(planned['plan']['parts']),self.app.editing.visual_sequence(self.task(b)['plan']['parts']))
 
     def test_semantic_whole_only_duration_gap_is_local(self):
@@ -552,6 +904,64 @@ class EditingTest(unittest.TestCase):
         self.assertEqual(len(self.app.editing.timeline(b,self.task(b))['segments']),1)
         with patch('vision_api.call',side_effect=AssertionError('must reuse plan')):self.op(b,'resume')
         self.assertEqual(self.task(b)['status'],'planned')
+
+    def test_changed_subtitles_and_bound_timestamps_supersede_cached_timeline(self):
+        b=self.create();task=self.task(b)
+        def timeline():return self.app.editing.timeline(b,task)
+        self.assertEqual(timeline()['source'],'import')
+        (self.inputs/'1.srt').write_text('1\n00:00:00,000 --> 00:00:01,000\nUpdated.\n',encoding='utf-8')
+        self.assertEqual(timeline()['segments'][0]['text'],'Updated.')
+        segments=[{'start':0,'end':1.5,'text':'Aligned.'}]
+        source=self.inputs/'1.timing.json'
+        save(source,segments)
+        self.assertEqual(timeline()['segments'],segments)
+        bound={'source':'elevenlabs_timestamps','audio_sha256':task['audio_sha256'],'segments':segments}
+        save(source,bound)
+        self.assertEqual(timeline()['source'],'elevenlabs_timestamps')
+        save(source,dict(bound,audio_sha256='different-audio'))
+        with self.assertRaisesRegex(ValueError,'其他音频'):timeline()
+        source.unlink();(self.inputs/'1.srt').unlink()
+        self.assertEqual(timeline()['source'],'elevenlabs_timestamps')
+
+    def test_discarded_sibling_revisions_do_not_block_a_new_plan(self):
+        batch=self.create();task=self.task(batch)
+        task['revision_root']='shared-root'
+        prior_batch=self.create();prior=self.task(prior_batch)
+        prior.update(revision_root='shared-root',status='planned',
+                     plan=self.app.editing.validate_plan(prior_batch,prior,self.proposal()))
+        self.app.store.put('edit_task',self.w['id'],prior)
+        parts=prior['plan']['parts']
+        def compare():return self.app.editing.duplicate_check(task,parts)
+        with self.assertRaisesRegex(ValueError,'完全重复'):compare()
+        prior['status']='cancelled';self.app.store.put('edit_task',self.w['id'],prior)
+        self.assertEqual(compare()['matches'],[])
+        prior['status']='planned';self.app.store.put('edit_task',self.w['id'],prior)
+        self.app.editing.action(self.p['id'],self.w['id'],prior_batch['id'],'delete-record',{})
+        self.assertEqual(compare()['matches'],[])
+        task['regenerated_from']=prior['id']
+        with self.assertRaisesRegex(ValueError,'60%'):compare()
+
+    def test_new_sentence_timing_requires_a_new_plan_and_preview(self):
+        batch=self.create()
+        with patch('vision_api.call',return_value=self.proposal()):self.op(batch,'plan')
+        self.op(batch,'preview')
+        task=self.task(batch)
+        path=Path(task['preview']['path'])
+        task['human_reviewed']=True
+        self.app.store.put('edit_task',self.w['id'],task)
+        self.op(batch,'timing')
+        self.assertEqual(self.task(batch)['preview'],task['preview'])
+        self.assertTrue(path.is_file())
+        (self.inputs/'1.srt').write_text('1\n00:00:00,000 --> 00:00:01,000\nNew cut.\n',encoding='utf-8')
+        self.op(batch,'timing')
+        revised=self.task(batch)
+        self.assertEqual(revised['status'],'timing_ready')
+        self.assertEqual(revised['timeline']['segments'][0]['text'],'New cut.')
+        self.assertNotIn('preview',revised)
+        self.assertFalse(path.exists())
+        self.assertNotIn('plan',revised)
+        self.assertFalse(revised['human_reviewed'])
+        self.assertEqual(revised['plan_history'][-1]['plan'],task['plan'])
     def test_manual_plan_uses_real_timeline_and_invalidates_preview(self):
         b=self.create();t=self.task(b)
         result=self.app.editing.action(self.p['id'],self.w['id'],b['id'],'save-plan',{'task_ids':[t['id']],'plan':self.proposal()})
@@ -559,6 +969,70 @@ class EditingTest(unittest.TestCase):
         result['preview']={'sha256':'old','plan_revision':result['plan_revision']};self.app.store.put('edit_task',self.w['id'],result)
         revised=self.app.editing.action(self.p['id'],self.w['id'],b['id'],'save-plan',{'task_ids':[t['id']],'plan':self.proposal()})
         self.assertNotEqual(result['plan_revision'],revised['plan_revision']);self.assertNotIn('preview',revised)
+    def test_reviewed_preview_stays_bound_to_prepared_footage_after_same_name_replacement(self):
+        p,w=self.p['id'],self.w['id'];edit=self.app.editing
+        # Isolate same-name replacement: both versions of the only source and the narration last three seconds.
+        (self.library/self.short_clips[15].name).unlink()
+        self.app.scan(p,w)
+        run(['ffmpeg','-v','error','-nostdin','-y','-f','lavfi','-i','sine=frequency=880:duration=3',
+             '-f','wav',self.inputs/'1.mp3'])
+        (self.inputs/'1.srt').write_text('1\n00:00:00,000 --> 00:00:03,000\nShow the red toy.\n',encoding='utf-8')
+        pairs={'input_path':str(self.inputs),'input_mode':'paired','rights_allowed':True}
+        pairs['pairing_snapshot']=edit.inspect_pairs(p,w,pairs)['snapshot']
+        batch=edit.create(p,w,pairs);bid=batch['id']
+        self.op(batch,'plan');self.op(batch,'preview')
+        task=self.task(batch)
+        self.assertEqual(task['status'],'awaiting_review',task.get('error'))
+        part=task['plan']['parts'][0];path=self.library/part['source_name']
+        self.assertEqual(part['shot_id'],part['asset_id'])
+        confirm={'task_ids':[task['id']],'content_confirmed':True,'preview_sha256':task['preview']['sha256'],
+                 'plan_revision':task['plan_revision']}
+        with self.assertRaises(Problem):edit.action(p,w,bid,'output',dict(confirm,plan_revision='older-revision'))
+        self.app.scan(p,w)
+        self.assertNotIn('source_warning',edit.list(p,w)[0]['tasks'][0])
+        edit.action(p,w,bid,'output',confirm)
+        run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=blue:s=90x160:r=30:d=3','-c:v','libx264',path])
+        self.app.scan(p,w)
+        asset=self.app.store.get('asset',part['asset_id'],w)
+        self.app.store.put('product','root',dict(self.app.product(p),shot_categories=['主体展示']))
+        self.app.confirm_asset_category(p,w,asset['id'],['主体展示'],expected_sha=asset['sha256'])
+        self.assertNotEqual(part['asset_sha256'],asset['sha256'])
+        edit.run(p,w,bid,[task['id']],'output')
+        stopped=self.task(batch)
+        self.assertEqual(stopped['status'],'needs_attention')
+        self.assertIn(path.name,stopped['error'])
+        self.assertEqual(stopped['plan'],task['plan'])
+        self.assertNotIn('output',stopped)
+        self.assertTrue(Path(stopped['preview']['path']).is_file())
+        self.assertIn(path.name,edit.list(p,w)[0]['tasks'][0]['source_warning'])
+        with self.assertRaisesRegex(Problem,path.name):edit.action(p,w,bid,'output',confirm)
+        retry=edit.action(p,w,bid,'regenerate',{'task_ids':[task['id']]})
+        edit.run(p,w,retry['id'],[retry['task_id']],'plan')
+        new=self.app.store.get('edit_task',retry['task_id'],w)
+        self.assertEqual(new['status'],'awaiting_review',new.get('error'))
+        self.assertEqual(new['plan']['parts'][0]['asset_sha256'],asset['sha256'])
+        self.op(edit.batch(p,w,retry['id']),'output',{'content_confirmed':True,'preview_sha256':new['preview']['sha256']})
+        self.assertEqual(self.app.store.get('edit_task',new['id'],w)['status'],'completed')
+        shutil.copyfile(self.clip,path)
+        self.app.scan(p,w)
+        self.assertFalse(any(t.get('source_warning') for b in edit.list(p,w) for t in b['tasks']))
+
+    def test_renderer_checks_saved_source_after_selection_before_encoding(self):
+        from workbench.edit_media import render
+        batch=self.create(mode='direct')
+        def replace_before_encoding(*args,**kwargs):
+            part=args[2][0]
+            shutil.copyfile(self.intro,part['path'])
+            with patch('workbench.edit_media.run',side_effect=AssertionError('changed source reached encoder')):
+                return render(*args,**kwargs)
+        with patch('vision_api.call',return_value=self.proposal()),patch('workbench.edit_media.render',side_effect=replace_before_encoding):
+            self.op(batch,'plan')
+        task=self.task(batch)
+        self.assertEqual(task['status'],'needs_attention')
+        self.assertIn('与剪辑方案中的版本不一致',task['error'])
+        self.assertNotIn('output',task)
+        self.assertFalse(list(Path(batch['output_path']).rglob('*.mp4')))
+
     def test_account_scope_and_changed_sources(self):
         b=self.create()
         with self.assertRaises(Problem):self.app.editing.batch(self.p['id'],self.w2['id'],b['id'])

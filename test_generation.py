@@ -1,5 +1,7 @@
 """Offline orchestration: no real copy, Dreamina submissions, or ElevenLabs calls."""
 import base64,json,shutil,unittest,threading,urllib.request,urllib.error
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 import test_editing as fixtures
@@ -38,7 +40,13 @@ class GenerationTest(unittest.TestCase):
             'characters':chars,'character_start_times_seconds':[i*step for i in range(len(chars))],
             'character_end_times_seconds':[(i+1)*step for i in range(len(chars))]}}
         with patch('elevenlabs_adapter.request',return_value=(result,'tts-hash')) as tts:
-            self.action(g,'approve-intro',{'content_confirmed':True,'intro_sha256':g['intro']['sha256'],'allow_paid':True})
+            with patch.object(self.app.editing,'action',side_effect=RuntimeError('queue unavailable')):
+                self.action(g,'approve-intro',{'content_confirmed':True,'intro_sha256':g['intro']['sha256'],'allow_paid':True})
+            interrupted=self.get(g)
+            self.assertEqual(interrupted['status'],'needs_attention')
+            with patch.object(self.app.editing,'create_uploaded',side_effect=AssertionError('must reuse linked batch')):
+                self.action(g,'resume',{'allow_paid':True})
+            self.assertEqual(self.get(g)['editing_batch_id'],interrupted['editing_batch_id'])
             self.assertEqual(tts.call_count,1);self.assertEqual(tts.call_args.kwargs['api_key_value'],'test-secret')
         g=self.get(g);self.assertEqual(g['status'],'editing_ready',g.get('error'))
         batch=self.app.editing.batch(self.p['id'],self.w['id'],g['editing_batch_id']);task=self.app.editing.tasks(self.w['id'],batch['id'])[0]
@@ -71,6 +79,113 @@ class GenerationTest(unittest.TestCase):
         g=self.make();status=self.app.generation.status();self.assertTrue(status['elevenlabs_key_ready']);self.assertNotIn('test-secret',json.dumps(status))
         with self.assertRaises(Problem):self.app.generation.get(self.p['id'],self.w2['id'],g['id'])
         with self.assertRaises(Problem):self.app.generation.action(self.p['id'],self.w['id'],g['id'],'start',{})
+    def test_generation_task_uses_uploaded_first_frame_manuscript_and_parameters(self):
+        from workbench.edit_media import run
+        frame=self.root/'cover.png'
+        run(['ffmpeg','-v','error','-f','lavfi','-i','color=red:s=90x160',
+             '-frames:v',1,'-c:v','png','-threads',1,frame])
+        p,w=self.p['id'],self.w['id']
+        service=self.app.generation
+        task=service.create(p,w,{'rights_allowed':True,'manuscript':'Original user copy',
+            'duration':8,'video_resolution':'1080p','jimeng_model':'seedance2.5',
+            'first_frame':{'name':'cover.png','base64':base64.b64encode(frame.read_bytes()).decode()}})
+        self.assertEqual(task['settings']['duration'],8)
+        self.assertEqual(service.config()['duration'],5)
+        with patch('codex_vision.call',return_value=self.script()) as codex:
+            task['script']=service.scripts(task,True)
+            self.assertIn('"manuscript": "Original user copy"',codex.call_args.args[1])
+        commands=[]
+        def cli(argv,folder,*args):
+            commands.append(argv)
+            if argv[1]=='image2video' and '-h' not in argv:
+                return '{"submit_id":"image-123"}'
+            if argv[1]=='query_result' and '-h' not in argv:
+                return '{"gen_status":"querying"}'
+            return 'seedance2.5'
+        with patch.object(service,'command',side_effect=cli):
+            service.jimeng(task)
+        submit=next(argv for argv in commands if argv[1]=='image2video' and '-h' not in argv)
+        self.assertEqual(Path(submit[submit.index('--image')+1]).read_bytes(),frame.read_bytes())
+        self.assertEqual(submit[submit.index('--video_resolution')+1],'1080p')
+        self.assertEqual(submit[submit.index('--duration')+1],'8')
+        self.assertNotIn('--ratio',submit)
+
+    def test_all_around_reference_passes_each_media_type_to_dreamina(self):
+        from workbench.edit_media import run
+
+        p,w=self.p['id'],self.w['id']
+        service=self.app.generation
+        frame=self.root/'reference.png'
+        run(['ffmpeg','-v','error','-f','lavfi','-i','color=red:s=160x90',
+             '-frames:v',1,'-c:v','png','-threads',1,frame])
+        refs=[{'kind':kind,'name':path.name,'base64':base64.b64encode(path.read_bytes()).decode()}
+              for kind,path in [('image',frame),('video',self.clip),('audio',self.audio)]]
+        body={'rights_allowed':True,'brief':'Use the supplied references','video_mode':'multimodal',
+              'jimeng_model':'seedance2.0fast','references':refs}
+        task=service.create(p,w,body)
+        default_model=service.create(p,w,dict(body,jimeng_model='',video_resolution='4k'))
+        self.assertEqual(default_model['settings']['video_resolution'],'4k')
+        self.assertEqual([ref['kind'] for ref in task['references']],['image','video','audio'])
+        with self.assertRaisesRegex(Problem,'至少需要'):
+            service.create(p,w,dict(body,references=refs[-1:]))
+        task['script']=self.script()
+        def cli(argv,folder,*args):
+            if '-h' in argv:return 'seedance2.0fast'
+            if argv[1]=='multimodal2video':return '{"submit_id":"multimodal-123"}'
+            if argv[1]=='query_result':return '{"gen_status":"querying"}'
+            return '{}'
+        with patch.object(service,'command',side_effect=cli) as command:
+            service.jimeng(task)
+        args=next(call.args[0] for call in command.call_args_list
+                  if call.args[0][1]=='multimodal2video' and '-h' not in call.args[0])
+        self.assertEqual(args[args.index('--ratio')+1],'9:16')
+        for flag,path in [('--image',frame),('--video',self.clip),('--audio',self.audio)]:
+            self.assertEqual(Path(args[args.index(flag)+1]).read_bytes(),path.read_bytes())
+        self.assertEqual(task['submit_id'],'multimodal-123')
+
+    def test_canvas_sample_uses_duration_ratio_and_requires_quote_confirmation(self):
+        p,w=self.p['id'],self.w['id']
+        service=self.app.generation
+        encoded=base64.b64encode(self.audio.read_bytes()).decode()
+        body={'sample':True,'video_mode':'multimodal','ratio':'3:4','duration':8,
+              'rights_allowed':True,
+              'references':[{'kind':'audio','name':'voice.wav','base64':encoded}]}
+        with self.assertRaisesRegex(Problem,'请填写样片文稿'):
+            service.create(p,w,dict(body,manuscript='   '))
+        draft=service.create(p,w,dict(body,manuscript='Sample script'))
+        ident=draft['id']
+        def canvas(g,*args):
+            command=args[:2]
+            if command==('canvas','create'):
+                return {'project':{'projectId':args[-1],'webUrl':'https://jimeng.jianying.com/ai-tool/canvas'}}
+            if command==('resource','upload'):return {'resourceId':args[args.index('--resource-id')+1]}
+            if command==('node','create'):
+                self.assertEqual(args[args.index('--model')+1],'seedance_2.5_draft')
+                self.assertEqual(args[args.index('--ratio')+1],'3:4')
+                self.assertEqual(args[args.index('--duration')+1],'8')
+                self.assertEqual(args[args.index('--resolution')+1],'480p')
+                self.assertEqual(args[args.index('--prompt')+1],'Sample script')
+                return {'node':{'nodeId':args[args.index('--node-id')+1]}}
+            if command==('node','quote'):return {'totalMaxCredits':7,'confirmationRequired':True}
+            if command==('node','confirm'):return {'creditConfirmationToken':'test-token'}
+            if command==('node','run'):
+                self.assertEqual(args[args.index('--submit-id')+1],service.get(p,w,ident)['submit_id'])
+                return {}
+            if command==('operation','status'):return {'resources':[{'state':'success'}]}
+            self.fail(f'Unexpected CLI operation: {command}')
+        with patch.object(service,'canvas_command',side_effect=canvas) as cli:
+            service.action(p,w,ident,'start',{})
+            service.run(p,w,ident,'start')
+            quoted=service.get(p,w,ident)
+            self.assertEqual((quoted['status'],quoted['sample_credits']),('awaiting_sample_approval',7))
+            self.assertFalse(any(call.args[1:3]==('node','run') for call in cli.call_args_list))
+            with self.assertRaises(Problem):service.action(p,w,ident,'approve-sample',{'allow_paid':True,'credits':6})
+            service.action(p,w,ident,'approve-sample',{'allow_paid':True,'credits':7})
+            service.run(p,w,ident,'approve-sample',True)
+            self.assertEqual(service.get(p,w,ident)['status'],'sample_ready')
+            with self.assertRaises(Problem):service.action(p,w,ident,'start',{})
+            self.assertEqual(sum(call.args[1:3]==('node','run') for call in cli.call_args_list),1)
+
     def test_codex_reuses_saved_structured_output(self):
         g=self.make('codex')
         with patch('codex_vision.call',return_value=self.script()) as codex:
@@ -85,6 +200,106 @@ class GenerationTest(unittest.TestCase):
         self.assertEqual(narration_name(item,set()),expected)
         self.assertEqual(narration_name(item,{expected.casefold()}),expected[:-4]+'_12345678.mp3')
         self.assertIn('_拿起光剑看看_',narration_name(dict(item,script='拿起光剑看看效果'),set()))
+
+    def test_narration_batch_write_failure_does_not_block_the_account(self):
+        service=self.app.generation
+        p,w=self.p['id'],self.w['id']
+        body={'scripts':['one','two'],'voice_id':'v','allow_paid':True}
+        service.settings({'elevenlabs_api_key':'test-secret'})
+        with self.app.store.db() as db:
+            db.execute("""CREATE TRIGGER fail_second BEFORE INSERT ON objects
+                WHEN new.kind='narration' AND json_extract(new.body,'$.script')='two'
+                BEGIN SELECT RAISE(ABORT,'second narration'); END""")
+        with self.assertRaises(sqlite3.IntegrityError):service.create_narrations(p,w,body)
+        self.assertEqual(self.app.store.all('narration',w),[])
+        with self.app.store.db() as db:db.execute('DROP TRIGGER fail_second')
+        self.assertEqual(len(service.create_narrations(p,w,body)['ids']),2)
+
+    def test_closed_executor_releases_narrations_and_preserves_generation_approval(self):
+        g=self.make()
+        service=self.app.generation
+        p,w=self.p['id'],self.w['id']
+        body={'scripts':['one','two'],'voice_id':'v','allow_paid':True}
+        g.update(sample=True,status='awaiting_sample_approval',sample_credits=5)
+        service.put(g)
+        with ThreadPoolExecutor() as stopped:pass
+        with patch.object(self.app,'pool',stopped),patch('elevenlabs_adapter.request') as provider:
+            with self.assertRaises(Problem) as failure:service.create_narrations(p,w,body)
+            self.assertEqual(failure.exception.status,503)
+            self.assertTrue(all(row['status']=='failed' for row in self.app.store.all('narration',w)))
+            with self.assertRaises(Problem) as failure:
+                service.action(p,w,g['id'],'approve-sample',{'allow_paid':True,'credits':5})
+            self.assertEqual(failure.exception.status,503)
+            restored=self.get(g)
+            self.assertEqual(restored['status'],'awaiting_sample_approval')
+            self.assertNotIn('submit_id',restored)
+            self.assertNotIn('sample_approved_credits',restored)
+            provider.assert_not_called()
+        self.assertEqual(len(service.create_narrations(p,w,body)['ids']),2)
+
+    def test_failed_automatic_sample_query_can_query_original_submission(self):
+        g=self.make()
+        service=self.app.generation
+        g.update(sample=True,status='video_pending',submit_id='original',sample_canvas_id='canvas')
+        service.put(g)
+        with ThreadPoolExecutor() as stopped:pass
+        with patch.object(self.app,'pool',stopped),patch.object(threading.Timer,'start'):
+            service.schedule(g)
+            first=service.timers[g['id']]
+            service.schedule(g)
+            latest=service.timers[g['id']]
+            first.function()
+            self.assertIs(service.timers.get(g['id']),latest)
+            latest.function()
+        self.assertNotIn(g['id'],service.timers)
+        self.assertEqual(self.get(g)['status'],'interrupted')
+        with patch.object(service,'canvas_command',return_value={'resources':[{'state':'success'}]}) as cli:
+            self.action(g,'poll',{})
+        self.assertEqual(self.get(g)['status'],'sample_ready')
+        self.assertEqual(cli.call_args.args[1:],('operation','status','original','--project-id','canvas'))
+
+    def test_continuation_without_valid_timestamps_reuses_audio_and_hands_off_for_local_asr(self):
+        from montage import fingerprint,save
+        g=self.make()
+        g.update(script=self.script(),intro={'sha256':fingerprint(self.intro),'path':str(self.intro)},
+                 intro_approval={'sha256':fingerprint(self.intro)},status='interrupted')
+        service=self.app.generation
+        service.put(g)
+        response={'audio_base64':base64.b64encode(self.audio.read_bytes()).decode()}
+        with ThreadPoolExecutor() as stopped:pass
+        with patch('elevenlabs_adapter.request',return_value=(response,'receipt')) as provider:
+            p,w=self.p['id'],self.w['id']
+            with self.app.store.db() as db:
+                db.execute("""CREATE TRIGGER fail_link BEFORE INSERT ON objects
+                    WHEN new.kind='generation' AND json_extract(new.body,'$.editing_batch_id') IS NOT NULL
+                    BEGIN SELECT RAISE(ABORT,'link write failed'); END""")
+            self.action(g,'resume',{'allow_paid':True})
+            self.assertIn('link write failed',self.get(g)['error'])
+            self.assertEqual(self.app.store.all('edit_batch',w),[])
+            self.assertEqual(self.app.store.all('edit_task',w),[])
+            with self.app.store.db() as db:db.execute('DROP TRIGGER fail_link')
+            service.action(p,w,g['id'],'resume',{'allow_paid':True})
+            with patch.object(self.app,'pool',stopped):
+                service.run(p,w,g['id'],'resume',True)
+            failed=self.get(g)
+            self.assertIn('editing_batch_id',failed,failed.get('error'))
+            self.assertEqual(failed['status'],'needs_attention')
+            self.assertFalse(failed.get('editing_started'))
+            self.action(g,'resume',{'allow_paid':True})
+            provider.assert_called_once()
+        g=self.get(g);self.assertEqual(g['status'],'editing_ready',g.get('error'))
+        batch=self.app.editing.batch(self.p['id'],self.w['id'],g['editing_batch_id'])
+        task,=self.app.editing.tasks(self.w['id'],batch['id'])
+        self.assertEqual(task['status'],'queued')
+        self.assertEqual(task['script'],g['script']['continuation_copy'])
+        self.assertEqual(fingerprint(task['audio']),fingerprint(self.audio))
+        def transcribe(args):
+            save(Path(args.project)/'audio/timing.json',{'segments':[{'start':0,'end':2,'text':task['script']}]})
+        with patch('workbench.local_asr.runtime',return_value=(self.root/'no-python',self.root)),patch(
+                'montage.transcribe',side_effect=transcribe) as local:
+            timeline=self.app.editing.timeline(batch,task)
+            self.assertEqual(timeline['source'],'local_transcription')
+            local.assert_called_once()
 
     def test_standalone_narrations_partial_failure_and_batch_handoff(self):
         from io import BytesIO

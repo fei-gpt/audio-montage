@@ -42,7 +42,11 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
     sequence=[p for p in sequence if p['role']=='intro']+[dict(p,role='body') for p in parts]+[p for p in sequence if p['role']=='outro']
     expected=(head_frames+body_frames+tail_frames)/30
     paths=[Path(audio)]+[Path(p['path']) for p in sequence if 'path' in p]+([Path(music['path'])] if music else [])
-    hashes={str(p):fingerprint(p) for p in paths};videos=[];sounds=[];bookend_audio=False
+    hashes={p:fingerprint(p) for p in dict.fromkeys(paths)}
+    for part in parts:
+        if 'asset_sha256' in part and hashes[Path(part['path'])]!=part['asset_sha256']:
+            raise ValueError(f'素材「{Path(part["path"]).name}」与剪辑方案中的版本不一致，请重新选片并核对预览')
+    videos=[];sounds=[];bookend_audio=False
     gap_text_available = None
     for i,part in enumerate(sequence):
         if 'reference_gap' in part:

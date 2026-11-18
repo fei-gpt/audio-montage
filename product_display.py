@@ -26,6 +26,7 @@ LIGHT_SWORD_CATEGORIES = (
 
 
 def uses_light_sword_categories(product):
+    if product.get('light_sword_product'):return True
     identity=' '.join(str(x or '') for x in (product.get('name'),product.get('knowledge_product_name'),
                        (product.get('profile') or {}).get('suggested_name'))).lower()
     return any(term in identity for term in ('lightplay','光剑','finger spinner sword'))

@@ -137,7 +137,7 @@ function narrationScriptHTML(number=1) {
   </div>`;
 }
 
-function bindNarrationForm(workspace,keepDraft) {
+function bindNarrationForm(workspace,keepDraft,updatedVoices) {
   const form=$('#narrationForm'), list=$('#narrationScripts'), add=$('#addNarrationScript');
   const voice=$('#narrationVoice'), submit=$('#submitNarration'), voiceStatus=$('#narrationVoiceStatus');
   const consent=$('#narrationConsent'), endpoint=`${wb()}/narrations`;
@@ -168,19 +168,25 @@ function bindNarrationForm(workspace,keepDraft) {
   };
   voice.onchange=update;
   if(!config.elevenlabs_key_ready)voiceStatus.textContent='请先在 ElevenLabs 设置中保存密钥。';
-  else if(!keepDraft||!form.dataset.voicesLoaded){
+  else if(updatedVoices||!keepDraft||!form.dataset.voicesLoaded){
+    const request=updatedVoices||api('/api/generation/voices');
+    form.voiceListRequest=request;
     form.dataset.voicesLoaded='loading';
+    voice.value='';
     voiceStatus.textContent='正在读取音色…';
-    api('/api/generation/voices').then(result=>{
-      if(!form.isConnected)return;
+    voice.disabled=true;
+    request.then(result=>{
+      if(!form.isConnected||form.voiceListRequest!==request)return;
       voice.innerHTML='<option value="">请选择音色</option>'+result.voices.map(item=>
         `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('');
       if(result.voices.some(item=>item.id===config.voice_id))voice.value=config.voice_id;
       voiceStatus.textContent=result.voices.length?'':'当前密钥没有可选音色。';
       form.dataset.voicesLoaded='ready';
+      voice.disabled=false;
       voice.onchange();
     }).catch(error=>{
-      if(!form.isConnected)return;
+      if(!form.isConnected||form.voiceListRequest!==request)return;
+      voice.innerHTML='<option value="">请选择音色</option>';
       voiceStatus.textContent=error.message;
       delete form.dataset.voicesLoaded;
     });

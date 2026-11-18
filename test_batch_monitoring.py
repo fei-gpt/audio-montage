@@ -8,6 +8,7 @@ from vision_api import dense_frames
 from montage import save
 
 
+@patch.object(fixtures.Workbench,'asset_recognition_enabled',True)
 class BatchMonitoringTest(unittest.TestCase):
     setUpClass=classmethod(fixtures.WorkbenchTest.setUpClass.__func__)
     tearDownClass=classmethod(fixtures.WorkbenchTest.tearDownClass.__func__)

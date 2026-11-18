@@ -78,6 +78,7 @@ class CodexDefaultsTest(unittest.TestCase):
     tearDown=fixtures.WorkbenchTest.tearDown
     attach=fixtures.WorkbenchTest.attach
 
+    @patch.object(fixtures.Workbench,'asset_recognition_enabled',True)
     def test_fresh_install_and_jobs_default_to_luna_without_api_key(self):
         self.attach()
         with patch('shutil.which',return_value='codex.exe'):
