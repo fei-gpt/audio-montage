@@ -1422,17 +1422,8 @@ class Editing:
         destination=task_root/('preview-'+attempt)
         if not preview:
             destination=Path(b['output_path'])/(t['name']+'-'+t['id'][:8]+'-'+attempt[:8])
-            names=[Path(t['intro']).name] if t.get('intro') else []
-            names.extend(c['name'] for c in clips if c['position']=='intro')
-            names.extend(x['source_name'] or Path(x['path']).name for x in parts)
-            names.extend(c['name'] for c in clips if c['position']=='outro')
-            tokens=[]
-            for name in names:
-                stem=Path(name).stem
-                number=re.fullmatch(r'(?:视频)?([0-9]+)',stem)
-                tokens.append(str(int(number[1])) if number else stem)
-            library=Path(parts[0]['path']).parent.name
-            output_name=re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', '-'.join([library,*tokens]))+'.mp4'
+            library=Path(parts[0]['path']).parent.name[:20].rstrip(' .') or '成片'
+            output_name=f"{library}-{t['id'][:8]}.mp4"
         with TemporaryDirectory(prefix='render-',dir=task_root) as scratch:
             folder=Path(scratch)/'media'
             out,report=render(t.get('intro'),t['audio'],parts,folder,preview,b['rules']['keep_original_audio'],lambda:self.check_stop(t),

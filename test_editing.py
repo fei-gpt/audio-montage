@@ -739,6 +739,7 @@ class EditingTest(unittest.TestCase):
         self.op(b,'output',{'task_ids':[t['id']],'content_confirmed':True,'preview_sha256':t['preview']['sha256']})
         t=self.task(b);self.assertEqual(t['status'],'completed',t.get('error'))
         out=Path(t['output']['path']);self.assertTrue(out.is_file())
+        self.assertEqual(out.name,f"{self.library.name}-{t['id'][:8]}.mp4")
         self.assertEqual(list(out.parent.iterdir()),[out])
         task_root=self.app.editing.folder(self.w['id'],b['id'])/t['id']
         preview=Path(t['preview']['path'])
