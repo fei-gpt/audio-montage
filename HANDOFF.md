@@ -9,7 +9,7 @@ GitHub包含程序，不包含账号登录、素材、审核、任务数据库�
 3. 安装Codex CLI并用使用者自己的ChatGPT账号登录。在识别服务设置保存Codex / gpt-6-luna。安装CLI不代表该账号已有此模型权限，实际权限需单独验证。
 4. 需要配音断句时运行 `powershell -ExecutionPolicy Bypass -File scripts/install-asr.ps1`。整条配音时长的MP4＋MP3配对路径无需ASR。Hypit、即梦和ElevenLabs仅在使用对应功能时另外配置。
 5. 双击 `check-workbench.cmd`，解决缺项后双击 `start-workbench.cmd`，打开 http://127.0.0.1:8768 。不要让两个服务使用同一数据目录。
-6. 新建产品、账号，接入使用者自己的素材。仅接受实际9:16输入。
+6. 新建产品、账号，接入使用者自己的素材。剪辑输出为竖屏；用于匹配镜头的参考视频可以使用不同画幅。
 
 自检只检查本地可用条件；不会调用模型、下载依赖或验证外部服务。可运行 `python -m workbench.preflight --json` 获取结构化报告，或 `--data "数据目录"` 检查另一个数据副本。核心Python/FFmpeg/ffprobe缺失返回非零；可选功能缺项单独列出。
 
