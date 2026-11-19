@@ -6,7 +6,7 @@
 
 ## 启动
 
-Windows 可双击 `start-workbench.cmd` 启动（8768）。项目会自动加载 `.media-runtime/bin` 中的 FFmpeg/ffprobe，子进程与 Hypit 使用同一 PATH。可用 `MONTAGE_MEDIA_BIN` 指定完整媒体工具目录。
+Windows 首次解压后，双击项目根目录的 `start-workbench.cmd`。它会在当前用户桌面创建「视频剪辑工作台」，启动本地服务并打开 http://127.0.0.1:8768/#editing 。以后双击桌面快捷方式即可。若移动工作台目录，在新位置重新双击脚本以更新快捷方式。项目会自动加载 `.media-runtime/bin` 中的 FFmpeg/ffprobe，子进程与 Hypit 使用同一 PATH。可用 `MONTAGE_MEDIA_BIN` 指定完整媒体工具目录。
 
 Windows 上已有完整 FFmpeg 时，可运行 `scripts/install-media.ps1 -SourceDirectory 'FFmpeg的bin目录'` 复制到项目运行时。安装脚本校验 libx264、保留共享 DLL，并记录文件来源与 SHA256。运行时目录不提交 Git。PDF 依赖由 `requirements-workbench.txt` 安装，扫描 PDF 使用 pypdfium2 渲染，无需额外安装 Poppler。
 
