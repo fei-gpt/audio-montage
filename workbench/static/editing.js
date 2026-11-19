@@ -61,6 +61,12 @@ function editingHistory(batches,batch,data){
     <details class="reference"><summary>保存位置</summary><p class="file-path">${esc(batch.output_path||'—')}</p></details>
   </section>`;
 }
+function workspaceAssetCount(w){
+  return w?.assets?.length||0;
+}
+function editingInventory(w){
+  return `素材 ${workspaceAssetCount(w)} 条`;
+}
 function editingHome(){
   const p=P();if(p)wid=defaultWorkspace(p,wid,accountPreferences);const w=W(),batches=w?.editing_batches||[];
   if(!batches.some(b=>b.id===editingBatchId))editingBatchId=batches.at(-1)?.id||null;
@@ -68,12 +74,11 @@ function editingHome(){
   const previousTable=$('#editHistoryTable');
   const historyScroll=previousTable?.dataset?.batch===batch?.id&&previousTable?.dataset?.page===String(data.page)
     ? [previousTable.scrollLeft,previousTable.scrollTop] : null;
-  const readyShots=w?.shots?.filter(s=>s.review_decision==='keep'&&s.human_confirmed&&!s.stale&&w.assets.some(a=>a.id===s.asset_id)).length||0;
   const disabled=w?.assigned?'':'disabled';
   $('#crumb').textContent='视频剪辑制作'+(p?' / '+p.name:'')+(w?' / '+w.name:'');
   $('#main').innerHTML=`<div class="heading"><div><h1>视频剪辑制作</h1><div class="muted">选择手头已有的文件，开始剪辑</div></div>${p?'<button id="openEditingGuidelines" type="button">剪辑总纲</button>':''}<button id="editRefresh">刷新</button></div>
   <section class="panel form-panel"><label class="field"><span>产品</span><select id="editProduct"><option value="">选择产品</option>${state.products.map(x=>`<option value="${x.id}" ${x.id===pid?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>${p?accountSelector():''}
-  <p class="small muted">${w?.assigned?'自动使用当前账号的素材库 · '+readyShots+' 个已确认镜头':'请先在「素材处理」中为当前账号接入素材库。'}</p>
+  <p class="small muted">${w?.assigned?'自动使用当前账号的素材库 · '+editingInventory(w):'请先在「素材处理」中为当前账号接入素材库。'}</p>
   <div class="edit-entry-options">
     <div><button id="newPairBatch" ${disabled}>批量导入视频＋配音</button><p class="small muted">已有多组同名 MP4 和 MP3，例如 001.mp4 和 001.mp3。选一个文件夹，按文件名配对后批量创建任务。</p></div>
     <div><button id="newReferenceBatch" ${p?.sentence_editing_only?'disabled':disabled}>按参考视频剪辑</button><p class="small muted">已有想参考的成片。上传参考视频，用素材库里的画面匹配它的镜头和节奏，配音可选。</p></div>
@@ -126,11 +131,11 @@ async function editUploadFile(file,kind,workspace){
   const result=await response.json();if(!response.ok)throw Error(result.error||'上传失败');return result;
 }
 function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
-  const w=W(),count=w.shots.filter(s=>s.review_decision==='keep'&&s.human_confirmed&&!s.stale&&w.assets.some(a=>a.id===s.asset_id)).length;
+  const w=W();
   const workspace=wb(),uploaded=new Map();
   const generated=referenceMode?[]:readyNarrations(w);
   const selected=new Set(preselectedNarrations.filter(id=>generated.some(item=>item.upload_id===id)));
-  dialog(referenceMode?'参考视频匹配镜头':'用配音或音乐剪辑',`<form id="editCreate"><div class="meta-box">使用 ${esc(P().name)} / ${esc(w.name)} 已确认素材库 · ${count} 个已确认镜头。无需重新上传素材。</div>
+  dialog(referenceMode?'参考视频匹配镜头':'用配音或音乐剪辑',`<form id="editCreate"><div class="meta-box">使用 ${esc(P().name)} / ${esc(w.name)} 素材库 · ${editingInventory(w)}。无需重新上传素材。</div>
   ${referenceMode?'':`<label class="field"><span>主音频</span><select id="editAudioKind"><option value="narration">配音</option>${P()?.sentence_editing_only?'':'<option value="music">音乐</option>'}</select></label>`}
   ${!referenceMode?`<label class="field" id="editNarrationSourceField"><span>配音来源</span>
     <select id="editNarrationSource"><option value="local">上传本地配音</option><option value="elevenlabs">使用 ElevenLabs 配音</option></select></label>

@@ -345,3 +345,12 @@ context.editOperation('resume','6').then(async()=>{
   assert.equal(script.value,'Keep this draft');
   console.log('Voice settings refresh the active batch and preserve its script');
 }).catch(error=>{console.error(error);process.exitCode=1});
+
+{
+  const library={assets:[{id:'a'},{id:'b',kind:'prepared'}],shots:[{asset_id:'a'},{asset_id:'a'}]};
+  assert.equal(context.editingInventory(library),'素材 2 条');
+  library.shots.push({asset_id:'b'});
+  assert.equal(context.editingInventory(library),'素材 2 条');
+  library.assets.pop();
+  assert.equal(context.editingInventory(library),'素材 1 条');
+}
