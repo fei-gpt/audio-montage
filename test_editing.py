@@ -479,6 +479,20 @@ class EditingTest(unittest.TestCase):
         self.assertEqual(t['status'],'awaiting_review',t.get('error'))
         self.assertEqual(t['preview']['report']['duration'],2)
 
+    def test_history_music_custom_length(self):
+        music=self.upload(self.audio,'music')
+        create=self.app.editing.create
+        body=dict(primary_music_id=music['id'],rights_allowed=True)
+        with self.assertRaisesRegex(Problem,'不能超过'):
+            create(self.p['id'],self.w['id'],dict(body,target_duration=3))
+        batch=create(self.p['id'],self.w['id'],dict(body,target_duration=1.2))
+        self.op(batch,'plan')
+        self.op(batch,'preview')
+        task=self.task(batch)
+        self.assertEqual(task['status'],'awaiting_review',task.get('error'))
+        self.assertAlmostEqual(task['preview']['report']['duration'],1.2,places=2)
+        self.assertEqual(task['audio_duration'],2)
+
     def test_music_can_end_five_frames_early_but_voice_must_fit(self):
         eng=self.app.editing
         for extra in (5,6):

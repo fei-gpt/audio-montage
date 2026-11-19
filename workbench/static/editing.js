@@ -77,7 +77,7 @@ function editingHome(){
   <div class="edit-entry-options">
     <div><button id="newPairBatch" ${disabled}>批量导入视频＋配音</button><p class="small muted">已有多组同名 MP4 和 MP3，例如 001.mp4 和 001.mp3。选一个文件夹，按文件名配对后批量创建任务。</p></div>
     <div><button id="newReferenceBatch" ${p?.sentence_editing_only?'disabled':disabled}>按参考视频剪辑</button><p class="small muted">已有想参考的成片。上传参考视频，用素材库里的画面匹配它的镜头和节奏，配音可选。</p></div>
-    <div><button id="newEditBatch" ${disabled}>用配音或音乐剪辑</button><p class="small muted">上传一条配音或音乐，从当前素材库选画面。音乐按整曲时长规划。</p></div>
+    <div><button id="newEditBatch" ${disabled}>用配音或音乐剪辑</button><p class="small muted">选择配音或音乐，从当前素材库选画面。音乐可使用整曲或指定时长。</p></div>
   </div></section>
   ${w?editingHistory(batches,batch,data):''}`;
   if(historyScroll){
@@ -152,7 +152,7 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
       :'当前产品和账号今天和昨天没有生成成功的 ElevenLabs 配音。'}</p>
       <button type="button" id="openNarrationHistory">前往 ElevenLabs 配音</button>`}</div>`:''}
   <div id="editNarrationUpload" class="refbox" style="margin-top:16px"><label class="field"><span id="editNarrationLabel">上传配音</span><input id="editNarration" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac" required><small id="editNarrationDuration" aria-live="polite"></small></label><p class="small muted" id="editAudioHint">画面使用当前账号素材库。</p></div>
-  <div id="editBackgroundMusic" class="refbox" style="margin-top:12px"><label class="field"><span>本批背景音乐（可选）</span><select name="history_music_id" aria-label="背景音乐历史"><option value="">从历史选择音乐</option>${(w.background_music_history||[]).map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${m.duration.toFixed(2)} 秒</option>`).join('')}</select><input id="editMusic" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac"><small id="editMusicDuration" aria-live="polite"></small></label><label class="field"><span>音乐音量（%）</span><input type="number" name="music_volume" min="0" max="100" value="15"></label><p id="editBatchMusicSummary" class="small muted" aria-live="polite"></p><p class="small muted">音乐从每条视频的配音段开头播放，按各自时长裁切，播完后不循环。</p></div>
+  <div id="editBackgroundMusic" class="refbox" style="margin-top:12px"><label class="field"><span id="editMusicLabel">本批背景音乐（可选）</span><select name="history_music_id" aria-label="音乐历史"><option value="">从历史选择音乐</option>${(w.background_music_history||[]).map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${m.duration.toFixed(2)} 秒</option>`).join('')}</select><input id="editMusic" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac"><small id="editMusicDuration" aria-live="polite"></small></label><label id="editMusicVolume" class="field"><span>音乐音量（%）</span><input type="number" name="music_volume" min="0" max="100" value="15"></label><p id="editBatchMusicSummary" class="small muted" aria-live="polite"></p><p id="editBackgroundHint" class="small muted">音乐从每条视频的配音段开头播放，按各自时长裁切，播完后不循环。</p></div>
   ${referenceMode?`<label class="field"><span>参考视频（任意画幅，最多 120 秒）</span><input id="editReference" type="file" accept=".mp4,.mov,.mkv,.webm" required></label><p class="small muted">按参考片的主体、动作和节奏匹配素材库镜头。可只传参考片做无配音预览。</p>`:''}<div id="editScripts"><label class="field"><span>整段配音文案（可选）</span><textarea name="script_0" placeholder="粘贴与配音对应的整段文案，无需提供字幕文件"></textarea></label></div>
   <label class="field"><span>使用哪一种素材识别结果？</span><select name="analysis_mode"><option value="simple" ${P().analysis_mode==='simple'?'selected':''}>简单展示结果</option><option value="standard" ${P().analysis_mode!=='simple'?'selected':''}>明确标准结果（含旧版记录）</option></select></label><label class="field"><span>剪辑匹配方式</span><select name="matching_mode"><option value="duration">时长匹配 · 按断句长度选素材（不调用模型）</option>${P()?.sentence_editing_only?'':`<option value="semantic">语义匹配 · 按文案意思选画面（调用模型）</option>`}</select></label><label class="field" id="editSemanticRequest"><span>本批通用剪辑要求（可选）</span><textarea name="request" placeholder="第一镜必须用四把光剑旋转&#10;最后一镜优先用带货指引"></textarea><small>按时长选片时，用素材类别名称指定第几镜、最后一镜或时间码。多条要求用换行或分号分隔。<br><strong>必须</strong>：第一镜必须用四把光剑旋转，只接受这个标签。最后一镜必须用四把光剑旋转+旋转到停下，先找恰好带这两个标签的素材。素材不足时，可用只带其中一个标签的素材补上。<br><strong>优先</strong>：最后一镜优先用带货指引。找不到合适镜头时可以换别的类别。<br><strong>排除</strong>：第三镜必须用单把光剑旋转，排除静止到旋转。</small></label>
   ${referenceMode?'':'<label class="field" id="editTargetDuration"><span>成片时长</span><select name="length_mode"><option value="voice">跟随配音</option><option value="music">跟随背景音乐</option><option value="custom">自定义秒数</option></select><input name="target_duration" aria-label="自定义成片秒数" placeholder="自定义秒数" type="number" min="0.1" max="600" step="0.001"></label>'}
@@ -208,6 +208,9 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   const musicLibrary=w.background_music_history||[];
   function updateBatchMusic(){
     const selectedMusic=musicInput.files?.[0]||musicLibrary.find(item=>item.id===musicHistory.value);
+    const musicOnly=audioKind?.value==='music';
+    musicInput.required=musicOnly&&!musicHistory.value;
+    $('#editBatchMusicSummary').hidden=musicOnly;
     const count=usesHistory()?selected.size:0;
     const summary=$('#editBatchMusicSummary');
     summary.textContent=count>1
@@ -250,16 +253,16 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
     for(const editor of individualEditors)
       editor.querySelector('[data-check-individual]').hidden=matching.value==='semantic';
     $('#editCreateSubmit').disabled=hasGenerated&&selected.size===0;
-    narrator.required=!referenceMode&&!hasGenerated;
-    narrator.disabled=hasGenerated;
-    $('#editNarrationUpload').hidden=hasGenerated;
+    narrator.disabled=hasGenerated||audioKind?.value==='music';
+    narrator.required=!referenceMode&&!narrator.disabled;
+    $('#editNarrationUpload').hidden=narrator.disabled;
     $('#editScripts').hidden=audioKind?.value==='music'||hasGenerated;
     variants.disabled=hasGenerated&&selected.size>1;
     if(variants.disabled)variants.value='1';
     $('#editVariantField').hidden=variants.disabled;
     updateBatchMusic();
     if(!referenceMode){
-      lengthMode.disabled=audioKind?.value==='music'||variants.disabled||matching.value==='semantic';
+      lengthMode.disabled=variants.disabled||matching.value==='semantic';
       $('#editTargetDuration').hidden=lengthMode.disabled;
       seconds.disabled=lengthMode.disabled||lengthMode.value!=='custom';
       seconds.hidden=seconds.disabled;
@@ -275,8 +278,8 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
     paidConsent.disabled=!paid;
     if(!paid)paidConsent.checked=false;
     $('#editCreateSubmit').textContent=mode.value==='direct'
-      ?(hasGenerated?'直接输出':'上传并直接输出')
-      :(hasGenerated?'生成预览':'上传并生成预览');
+      ?(hasGenerated||audioKind?.value==='music'?'直接输出':'上传并直接输出')
+      :(hasGenerated||audioKind?.value==='music'?'生成预览':'上传并生成预览');
     if(variants.disabled)$('#editCreateSubmit').textContent=mode.value==='direct'?`输出 ${selected.size} 条视频`:`生成 ${selected.size} 条预览`;
     if(hasGenerated)$('#editUploadProgress').textContent=selected.size?'已带入所选配音及文案。':generated.length?'请至少选择一条配音。':'';
   }
@@ -296,16 +299,22 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
       const showCues=()=>{cueBox.hidden=!music||Boolean(cuts.value?.trim())};
       cuts.oninput=showCues;showCues();
     }
-    $('#editBackgroundMusic').hidden=music;
+    $('#editMusicLabel').textContent=music?'主音乐（从历史选择或上传）':'本批背景音乐（可选）';
+    $('#editMusicVolume').hidden=music;
+    $('#editBackgroundHint').hidden=music;
+    if(lengthMode?.options){
+      lengthMode.options[0].textContent=music?'跟随整首音乐':'跟随配音';
+      lengthMode.options[1].hidden=lengthMode.options[1].disabled=music;
+    }
     for(const id of ['editLanguage','editAsrModel','editAsrHint'])$('#'+id).hidden=music;
     if(referenceMode){matching.value='semantic';mode.value='preview'}
     if(music)matching.value='duration';
     if(matching.options){matching.options[0].disabled=referenceMode;if(matching.options[1])matching.options[1].disabled=music}
     if(mode.options)mode.options[1].disabled=referenceMode;
-    $('#editUploadProgress').textContent=referenceMode?'上传后自动匹配参考镜头并生成预览。':music?'上传后按音乐时长自动选片，无需转写或调用模型。':'上传后自动识别配音时间轴并选片。';
+    $('#editUploadProgress').textContent=referenceMode?'上传后自动匹配参考镜头并生成预览。':music?'从音乐开头按所选时长剪辑。':'按配音时间轴选片。';
     updateExecution();
   }
-  if(audioKind)audioKind.onchange=()=>{narrator.value='';audioSettings()};
+  if(audioKind)audioKind.onchange=()=>{narrator.value='';lengthMode.value='voice';audioSettings()};
   if(narrationSource)narrationSource.onchange=audioSettings;
   if(generated.length)bindNarrationSearch($('#editNarrationSearch'),generatedPicker.querySelectorAll('[data-narration-search]'),$('#editNarrationSearchEmpty'));
   generatedPicker?.querySelectorAll('[name="generated_narrations"]').forEach(input=>input.onchange=()=>{
@@ -357,9 +366,11 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
     if(!referenceMode)body.required_cuts=body.narrations.length<2?(f.get('required_cuts')||''):'';
     return action(async()=>{
       if(f.get('matching_mode')==='duration'){try{const capabilities=await api('/api/editing-modes');if(!capabilities.modes.includes('duration'))throw new Error('unsupported')}catch(e){throw new Error('时长匹配需要加载新版服务，请待当前任务结束后重启工作台')}}
-      if(file&&!history){
-        if(musicOnly)body.primary_music_id=(await upload(file,'music')).id;
-        else body.narrations.push({id:(await upload(file,'narration')).id,script:f.get('script_0')||''});
+      if(musicOnly){
+        body.primary_music_id=await backgroundId(music,f.get('history_music_id'));
+        if(!body.primary_music_id)throw new Error('请选择历史音乐或上传音乐文件');
+      }else if(file&&!history){
+        body.narrations.push({id:(await upload(file,'narration')).id,script:f.get('script_0')||''});
       }
       if(reference)body.reference_id=(await upload(reference,'reference')).id;
       if(!musicOnly){

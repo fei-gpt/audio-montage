@@ -339,7 +339,13 @@ class Editing:
         if reference and reference['duration']>120:raise Problem('参考视频最多120秒')
         if reference and any(c['sha256']==reference['sha256'] for c in clips):raise Problem('参考视频不能同时作为片头或片尾')
         voice_duration=uploads[0]['duration'] if len(uploads)==1 and not reference and matching_mode=='duration' else None
-        target=editing_target_duration(body,music,voice_duration)
+        if primary_music:
+            target=body.get('target_duration')
+            if target is not None and (type(target) not in (int,float) or not math.isfinite(target)
+                    or not 0.1<=target<=min(600,primary_music['duration'])):
+                raise Problem('自定义音乐时长须在0.1至600秒之间，且不能超过所选音乐时长')
+        else:
+            target=editing_target_duration(body,music,voice_duration)
         cut_text=body.get('required_cuts','')
         if cut_text and (reference or clips or len(uploads)>1):
             raise Problem('必切时间点仅适用于单条配音或音乐剪辑')
@@ -379,6 +385,7 @@ class Editing:
                                   music_cue_assist=body.get('music_cue_assist') is True and not required_cuts)
             inputs.append(dict(name=primary_music['name'],audio=primary_music['path'],
                                audio_sha256=primary_music['sha256'],audio_duration=primary_music['duration'],
+                               **({'target_duration':target} if target is not None else {}),
                                script='',stage='等待按音乐时长规划画面'))
         if reference_only:
             inputs.append(dict(name=reference['name'],stage='等待按参考分镜匹配素材'))
@@ -491,7 +498,8 @@ class Editing:
         if b['rules'].get('reference_only'):
             return {'segments':[],'source':'参考片节奏（无配音）','audio_sha256':t['audio_sha256']}
         if b['rules'].get('matching_mode')=='duration' and b['rules'].get('timing_basis')=='audio_duration':
-            return {'audio_sha256':t['audio_sha256'],'segments':[{'start':0,'end':t['audio_duration'],'text':''}],
+            duration=t.get('target_duration',t['audio_duration']) if b['rules'].get('audio_kind')=='music' else t['audio_duration']
+            return {'audio_sha256':t['audio_sha256'],'segments':[{'start':0,'end':duration,'text':''}],
                     'source':'audio_duration','human_reviewed':False,'note':'只读取实际音频时长，没有转写或推测字幕'}
         cache=self.app.wroot(t['workspace_id'])/'editing-audio'
         key=t['audio_sha256']+'-'+b['rules']['language'];dest=cache/(key+'.json')
@@ -1078,7 +1086,7 @@ class Editing:
             if b['rules'].get('music_cue_assist') and not required_cuts:
                 from workbench.music_cues import music_cues
                 import subprocess
-                try:cues,lift=music_cues(t['audio'],t['audio_duration'])
+                try:cues,lift=music_cues(t['audio'],t.get('target_duration',t['audio_duration']))
                 except (OSError,subprocess.SubprocessError):pass
             priority=None
             shot_allowed=None

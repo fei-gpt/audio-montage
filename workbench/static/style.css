@@ -6,3 +6,5 @@
 .edit-entry-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px;margin-top:14px}.edit-entry-options>div{border:1px solid var(--line,#dbe4ee);border-radius:8px;padding:12px}.edit-entry-options p{margin:8px 0 0}
 
 .sidebar-restart{margin-top:auto;padding:12px 8px}.sidebar-restart button{font-size:12px;padding:5px 9px}.sidebar-restart+.sidebar-foot{margin-top:0}
+
+[hidden] { display: none !important; }

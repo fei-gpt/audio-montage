@@ -8,7 +8,7 @@ def music_cues(path, duration):
     # Audio-only decode. Bound memory for long uploads; the rest of the track
     # keeps its ordinary planning behavior.
     pcm = subprocess.check_output(
-        ['ffmpeg', '-v', 'error', '-nostdin', '-i', str(path), '-t', '600',
+        ['ffmpeg', '-v', 'error', '-nostdin', '-i', str(path), '-t', str(min(duration,600)),
          '-vn', '-ac', '1', '-ar', '9000', '-f', 's16le', '-'], timeout=60)
     samples = array('h', pcm)
     total = math.ceil(duration * 30 - 1e-7)
