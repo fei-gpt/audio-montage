@@ -319,7 +319,19 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
     $('#editUploadProgress').textContent=referenceMode?'上传后自动匹配参考镜头并生成预览。':music?'从音乐开头按所选时长剪辑。':'按配音时间轴选片。';
     updateExecution();
   }
-  if(audioKind)audioKind.onchange=()=>{narrator.value='';lengthMode.value='voice';audioSettings()};
+  if(audioKind){
+    const drafts=new Map();
+    let previousKind=audioKind.value;
+    audioKind.onchange=()=>{
+      drafts.set(previousKind,{length:lengthMode.value,seconds:seconds.value,matching:matching.value});
+      previousKind=audioKind.value;
+      const draft=drafts.get(previousKind);
+      lengthMode.value=draft?.length||'voice';
+      seconds.value=draft?.seconds||'';
+      matching.value=draft?.matching||'duration';
+      audioSettings();
+    };
+  }
   if(narrationSource)narrationSource.onchange=audioSettings;
   if(generated.length)bindNarrationSearch($('#editNarrationSearch'),generatedPicker.querySelectorAll('[data-narration-search]'),$('#editNarrationSearchEmpty'));
   generatedPicker?.querySelectorAll('[name="generated_narrations"]').forEach(input=>input.onchange=()=>{

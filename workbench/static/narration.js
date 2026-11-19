@@ -119,6 +119,7 @@ function narrationFormHTML(workspace) {
       <button type="button" id="addNarrationScript">添加新文案</button>
       <label class="field"><span>本批音色</span><small>本次添加的所有文案都会使用同一个音色。</small><select id="narrationVoice" required><option value="">请选择音色</option></select></label>
       <p id="narrationVoiceStatus" class="small" role="status"></p>
+      <button type="button" id="retryNarrationVoices" hidden>重新获取音色</button>
       <p id="narrationConsent" class="small muted"></p>
       <button class="primary" id="submitNarration" disabled>生成配音</button>
     </form>
@@ -167,9 +168,12 @@ function bindNarrationForm(workspace,keepDraft,updatedVoices) {
     list.lastElementChild.querySelector('textarea').focus();
   };
   voice.onchange=update;
+  const retry=$('#retryNarrationVoices');
+  retry.onclick=()=>bindNarrationForm(workspace,true,api('/api/generation/voices'));
   if(!config.elevenlabs_key_ready)voiceStatus.textContent='请先在 ElevenLabs 设置中保存密钥。';
   else if(updatedVoices||!keepDraft||!form.dataset.voicesLoaded){
     const request=updatedVoices||api('/api/generation/voices');
+    retry.hidden=true;
     form.voiceListRequest=request;
     form.dataset.voicesLoaded='loading';
     voice.value='';
@@ -182,12 +186,14 @@ function bindNarrationForm(workspace,keepDraft,updatedVoices) {
       if(result.voices.some(item=>item.id===config.voice_id))voice.value=config.voice_id;
       voiceStatus.textContent=result.voices.length?'':'当前密钥没有可选音色。';
       form.dataset.voicesLoaded='ready';
+      retry.hidden=result.voices.length>0;
       voice.disabled=false;
       voice.onchange();
     }).catch(error=>{
       if(!form.isConnected||form.voiceListRequest!==request)return;
       voice.innerHTML='<option value="">请选择音色</option>';
       voiceStatus.textContent=error.message;
+      retry.hidden=false;
       delete form.dataset.voicesLoaded;
     });
   }

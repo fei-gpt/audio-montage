@@ -514,6 +514,18 @@ class EditingTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'配音'):
                 eng.validate_plan(voice_batch,t,t['plan'])
 
+    def test_confirmed_prepared_clip_without_shots_enters_duration_pool(self):
+        p,w=self.p['id'],self.w['id']
+        asset=next(a for a in self.app.visible_assets(w) if a['id']!=self.asset['id'])
+        def ids(**kwargs):
+            return {c['id'] for c in self.app.editing.candidates(p,w,**kwargs)}
+        self.assertNotIn(asset['id'],ids())
+        label='主体展示'
+        self.app.store.put('product','root',dict(self.app.product(p),shot_categories=[label]))
+        self.app.confirm_asset_category(p,w,asset['id'],[label])
+        self.assertIn(asset['id'],ids())
+        self.assertNotIn(asset['id'],ids(active_versions=True))
+
     def test_music_required_cut_trims_prepared_clips_and_checks_export_plan(self):
         self.p['name']='lightplay'
         self.app.store.put('product','root',self.p)

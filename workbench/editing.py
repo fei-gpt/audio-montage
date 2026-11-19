@@ -554,12 +554,14 @@ class Editing:
             if not record.get('confirmed'):return []
             labels=dict.fromkeys(aliases.get(label,label) for label in record.get('labels',[]))
             return [label for label in labels if not active_labels or label in active_labels]
+        shots=self.store.all('shot',w)
+        segmented_assets={s['asset_id'] for s in shots if not s.get('stale')}
         if not active_versions and not reference_clock:
             for a in assets.values():
                 if shot_ids is not None and a['id'] not in shot_ids:continue
                 if a.get('replaced_source') and not a.get('user_category',{}).get('confirmed'):
                     continue
-                if not use_prepared_files and not (a.get('replaced_source') and confirmed_categories(a)):
+                if not use_prepared_files and not (confirmed_categories(a) and (a['id'] not in segmented_assets or a.get('replaced_source'))):
                     continue
                 if a['sha256'] in usage.errors:
                     blocked.add(a['sha256'])
@@ -575,7 +577,7 @@ class Editing:
                                    start=0,end=end,frames=frames,usage_count=uses,usage_limit=LIMIT,
                                    confirmed_categories=confirmed_categories(a),
                                    safe_trim_ranges=[dict(start=0,end=end)],action_start=None,action_end=None))
-        for s in self.store.all('shot',w):
+        for s in shots:
             if shot_ids is not None and s['id'] not in shot_ids:continue
             if analysis_mode and s.get('analysis_mode','standard')!=analysis_mode:continue
             a=assets.get(s['asset_id'])

@@ -123,6 +123,12 @@ class Generation:
         req=urllib.request.Request('https://api.elevenlabs.io/v1/voices',headers={'xi-api-key':key})
         try:
             with urllib.request.build_opener(NoRedirect).open(req,timeout=30) as r:data=json.load(r)
+        except urllib.error.HTTPError as exc:
+            try:detail=json.load(exc).get('detail')
+            except (ValueError,AttributeError,OSError):detail=None
+            if isinstance(detail,dict) and detail.get('status')=='missing_permissions' and 'voices_read' in str(detail.get('message','')):
+                raise Problem('当前 ElevenLabs 密钥缺少读取音色权限（voices_read）。请为此密钥开启 Voices 的读取权限，再获取声音列表。') from None
+            raise Problem(f'ElevenLabs 获取声音列表失败（HTTP {exc.code}），请核对密钥与账户权限') from None
         except Exception:raise Problem('获取声音失败，请检查密钥权限和网络；未发送配音请求') from None
         return {'voices':[{'id':v['voice_id'],'name':v.get('name',v['voice_id'])} for v in data.get('voices',[])[:1000]]}
 
