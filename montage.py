@@ -49,8 +49,8 @@ def media_duration(info, kind):
     return min(values)
 
 
-def portrait_geometry(info):
-    """Require exact 9:16 display geometry, including pixel shape and rotation."""
+def video_geometry(info):
+    """Read unambiguous display geometry, including pixel shape and rotation."""
     streams = [s for s in info['streams'] if s['codec_type'] == 'video']
     if len(streams) != 1 or streams[0].get('disposition', {}).get('attached_pic'):
         raise ValueError('视频轨道无法唯一确定，排除该素材')
@@ -83,13 +83,18 @@ def portrait_geometry(info):
     except (ValueError, TypeError):
         raise ValueError('旋转信息无效，排除该素材')
     if not math.isfinite(rotation) or rotation not in [0, 90]:
-        raise ValueError('非直角旋转无法确认 9:16，排除该素材')
+        raise ValueError('非直角旋转无法确认显示比例，排除该素材')
     if rotation == 90:
         display = 1 / display
-    if display != Fraction(9, 16):
-        raise ValueError(f'素材显示比例为 {display.numerator}:{display.denominator}，仅允许 9:16')
     return {'coded_width': w, 'coded_height': h, 'rotation': rotation,
-            'display_ratio': '9:16', 'stream_index': stream.get('index', 0)}
+            'display_ratio': f'{display.numerator}:{display.denominator}', 'stream_index': stream.get('index', 0)}
+
+
+def portrait_geometry(info):
+    geometry = video_geometry(info)
+    if geometry['display_ratio'] != '9:16':
+        raise ValueError(f"素材显示比例为 {geometry['display_ratio']}，仅允许 9:16")
+    return geometry
 
 
 def require_portrait_output(config):

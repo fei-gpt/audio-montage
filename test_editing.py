@@ -63,6 +63,95 @@ class EditingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'90'):
             self.app.editing.validate_plan(b,task,self.proposal())
 
+    def test_short_ending_is_removed_before_last_shot_check_and_voice_render(self):
+        batch=self.create(matching_mode='semantic')
+        part=self.proposal()['parts'][0]
+        proposal={'parts':[dict(part,frames=54),dict(part,start=1.8,frames=6)]}
+        rule=dict(ordinal=None,frame=None,last=True,label='静态展示',excluded=[],preferred=False,text='最后一镜用静态展示')
+        batch['rules']['shot_requests']=[rule]
+        self.app.store.put('edit_batch',self.w['id'],batch)
+        with patch('vision_api.call',return_value=proposal):
+            self.op(batch,'plan')
+        self.assertIn('最后一镜用静态展示',self.task(batch)['error'])
+        self.asset['user_category']={'labels':['静态展示'],'confirmed':True}
+        self.app.store.put('asset',self.w['id'],self.asset)
+        with patch('vision_api.call',return_value=proposal):
+            self.op(batch,'plan')
+        task=self.task(batch)
+        self.assertEqual(task['status'],'planned',task.get('error'))
+        self.assertEqual([p['frames'] for p in task['plan']['parts']],[60])
+        self.op(batch,'preview')
+        self.assertEqual(self.task(batch)['preview']['report']['body_seconds'],2)
+
+    def test_reference_tail_threshold_is_strict(self):
+        from workbench.editing import remove_short_ending
+        for frames,expected in ((14,[30]),(15,[30,15]),(16,[30,16])):
+            parts=[dict(frames=30),dict(frames=frames)]
+            self.assertEqual([p['frames'] for p in remove_short_ending(parts,15,{},False)],expected)
+
+    def test_preview_check_repairs_only_blocked_range_in_original_task(self):
+        from workbench.usage import SCHEMA
+        import shutil
+        w,p=self.w['id'],self.p['id']
+        edit=self.app.editing
+        b=self.create(matching_mode='duration')
+        t=self.task(b)
+        other=self.library/'blue.mp4'
+        shutil.copy2(self.intro,other)
+        self.app.scan(p,w)
+        blue=next(a for a in self.app.visible_assets(w) if a['name']==other.name)
+        write_document(other,blue['sha256'],complete=True)
+        self.app.store.put('shot',w,dict(self.shot,id='blue',asset_id=blue['id'],asset_sha256=blue['sha256'],end=1,safe_trim_ranges=[]))
+        raw=dict(self.proposal()['parts'][0],frames=30)
+        t['plan']=edit.validate_plan(b,t,dict(parts=[raw,dict(raw,start=1)]))
+        t.update(plan_revision='first',status='planned')
+        self.app.store.put('edit_task',w,t)
+        save(Path(str(self.asset['path'])+'.usage.json'),dict(schema=SCHEMA,source_sha256=self.asset['sha256'],
+             references=[dict(task_id=str(n),ranges=[[0,30]]) for n in range(3)]))
+        result=edit.action(p,w,b['id'],'replacement-options',dict(task_id=t['id']))
+        self.assertEqual([x['index'] for x in result['issues']],[0])
+        alt=next(x for x in result['issues'][0]['options'] if x['shot_id']=='blue')
+        body=dict(task_ids=[t['id']],plan_revision='first',changes={'0':[alt['shot_id'],alt['asset_sha256'],alt['start']]})
+        edit.action(p,w,b['id'],'repair-shots',body)
+        edit.run(p,w,b['id'],[t['id']],'preview')
+        revised=self.task(b)
+        self.assertEqual(revised['status'],'awaiting_review',revised.get('error'))
+        self.assertEqual(revised['plan']['parts'][1],t['plan']['parts'][1])
+        self.assertEqual(revised['preview']['report']['body_seconds'],2)
+        self.assertFalse(edit.action(p,w,b['id'],'preview-check',dict(task_id=t['id']))['issues'])
+
+    def test_reference_preview_omits_short_final_beat(self):
+        from workbench.reference import span_key
+        w=self.w['id']
+        tail=next(a for a in self.app.visible_assets(w) if a['id']!=self.asset['id'])
+        write_document(tail['path'],tail['sha256'],complete=True)
+        self.app.store.put('shot',w,dict(self.shot,id='tail',asset_id=tail['id'],asset_sha256=tail['sha256'],end=.5,safe_trim_ranges=[dict(start=0,end=.5)]))
+        ref=self.upload(self.intro,'reference')
+        batch=self.app.editing.create_uploaded(self.p['id'],w,dict(reference_id=ref['id'],matching_mode='semantic',mode='preview',rights_allowed=True))
+        beats=[dict(start=0,end=.8),dict(start=.8,end=1)]
+        proposal={'parts':[dict(reference_beat=i,shot_id=s,reason='符合参考动作') for i,s in enumerate([self.shot['id'],'tail'],1)]}
+        with patch('workbench.reference_structure.analyze',return_value={'beats':beats}),patch('workbench.reference.select_slots',return_value=proposal),patch('workbench.reference.screen_sources',side_effect=lambda app,b,c:(c,[])),patch('workbench.reference.audit_choices',side_effect=lambda app,b,rows,paid,stop:{span_key(x):{'verdict':'different_shoot'} for row in rows for x in row}):
+            self.op(batch,'plan')
+            task=self.task(batch)
+            self.assertEqual(task['status'],'planned',task.get('error'))
+            self.assertEqual([p['frames'] for p in task['plan']['parts']],[24])
+            self.op(batch,'preview')
+            self.assertEqual(self.task(batch)['preview']['report']['body_seconds'],.8)
+
+    def test_browsing_reuses_hash_and_rechecks_replaced_file(self):
+        from workbench.editing import listed_fingerprint
+        path=self.root/'replacement.mp4'
+        path.write_bytes(b'first')
+        with patch('workbench.editing.fingerprint',wraps=fingerprint) as hashed:
+            before=listed_fingerprint(path)
+            self.assertEqual(listed_fingerprint(path),before)
+            self.assertEqual(hashed.call_count,1)
+            replacement=self.root/'new.mp4'
+            replacement.write_bytes(b'other')
+            replacement.replace(path)
+            self.assertNotEqual(listed_fingerprint(path),before)
+            self.assertEqual(hashed.call_count,2)
+
     def test_validate_existing_plan_hashes_only_selected_footage(self):
         edit=self.app.editing;w=self.w['id']
         other=next(a for a in self.app.visible_assets(w) if a['id']!=self.asset['id'])
@@ -390,6 +479,27 @@ class EditingTest(unittest.TestCase):
         self.assertEqual(t['status'],'awaiting_review',t.get('error'))
         self.assertEqual(t['preview']['report']['duration'],2)
 
+    def test_music_can_end_five_frames_early_but_voice_must_fit(self):
+        eng=self.app.editing
+        for extra in (5,6):
+            audio=self.root/f'music-{extra}.wav'
+            run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=880:sample_rate=48000',
+                 '-af',f'atrim=end_sample={(90+extra)*1600}',audio])
+            music=self.upload(audio,'music')
+            b=eng.create(self.p['id'],self.w['id'],dict(primary_music_id=music['id'],rights_allowed=True))
+            self.op(b,'plan')
+            t=self.task(b)
+            if extra==6:
+                self.assertNotEqual(t['status'],'planned')
+                continue
+            self.assertEqual(t['status'],'planned',t.get('error'))
+            self.op(b,'preview')
+            t=self.task(b)
+            self.assertEqual(t['preview']['report']['duration'],3)
+            voice_batch=dict(b,rules=dict(b['rules'],audio_kind='voice'))
+            with self.assertRaisesRegex(ValueError,'配音'):
+                eng.validate_plan(voice_batch,t,t['plan'])
+
     def test_music_required_cut_trims_prepared_clips_and_checks_export_plan(self):
         self.p['name']='lightplay'
         self.app.store.put('product','root',self.p)
@@ -450,6 +560,46 @@ class EditingTest(unittest.TestCase):
         result=self.app.editing.render(b,t,True);report=result['preview']['report']
         self.assertEqual(report['intro_seconds'],1);self.assertEqual(report['outro_seconds'],1);self.assertEqual(report['duration'],4)
         self.assertTrue(report['music_body_only']);self.assertFalse(report['music_looped']);self.assertEqual(report['music_volume'],.15)
+    def test_reference_aspect_ratios_are_independent_of_production_clips(self):
+        for size in ('480x854','160x90','96x96'):
+            with self.subTest(size=size):
+                video=self.root/f'{size}.mp4'
+                run(['ffmpeg','-v','error','-f','lavfi','-i',f'testsrc2=s={size}:r=30:d=1',
+                     '-c:v','libx264',video])
+                ref=self.upload(video,'reference')
+                batch=self.app.editing.create_uploaded(self.p['id'],self.w['id'],{'reference_id':ref['id']})
+                self.app.editing.check_inputs(batch,self.task(batch))
+                with self.assertRaisesRegex(ValueError,'仅允许 9:16'):
+                    self.upload(video,'clip')
+
+    def test_reference_can_repeat_display_with_or_without_narration(self):
+        edit=self.app.editing
+        p,w=self.p['id'],self.w['id']
+        self.app.store.put('product','root',dict(self.app.product(p),light_sword_product=True))
+        batch=self.create(matching_mode='semantic')
+        task=dict(self.task(batch),audio_duration=2)
+        candidates={}
+        parts=[]
+        for i in range(4):
+            key=f'shot-{i}'
+            labels=['展示不同灯效','四把光剑旋转' if i%2 else '单把光剑旋转']
+            candidates[key]=dict(id=key,asset_id=key,asset_sha256=key,name=key+'a.mp4',
+                                 start=0,end=.5,frames=15,safe_trim_ranges=[],
+                                 action_start=None,action_end=None,confirmed_categories=labels)
+            parts.append(dict(shot_id=key,reference_beat=i+1,start=0,frames=15,reason='符合参考动作'))
+        plan={'parts':parts}
+        with self.assertRaisesRegex(ValueError,'最多连续三镜'):
+            edit.validate_plan(batch,task,plan,candidates)
+        ref=self.upload(self.intro,'reference')
+        task.update(reference_analysis={'beats':[dict(start=i*.5,end=(i+1)*.5,purpose='旋转') for i in range(4)]},
+                    plan={'light_sword_rotations':True})
+        for silent in (True,False):
+            reference=dict(batch,reference=ref,rules=dict(batch['rules'],reference_matching=2,
+                           reference_evidence='hypit-structure-v1',reference_only=silent))
+            checked=edit.validate_plan(reference,task,plan,candidates)
+            self.assertEqual(len(checked['parts']),4)
+            self.assertFalse(checked['light_sword_rotations'])
+
     def test_reference_only_preview_and_local_replacement(self):
         ref=self.upload(self.intro,'reference')
         w=self.w['id'];p=self.p['id'];eng=self.app.editing
@@ -479,11 +629,12 @@ class EditingTest(unittest.TestCase):
             self.op(b,'preview');self.assertEqual(self.task(b)['preview']['report']['body_seconds'],2)
         with self.assertRaises(Problem):eng.media(p,self.w2['id'],t['id']+'-2')
 
-    def test_reference_clock_keeps_three_frame_intro_and_missing_tail(self):
+    def test_reference_missing_tail_extends_real_footage_through_output(self):
         self.add_minimum_source(3)
         from workbench.reference import span_key
         eng=self.app.editing
         w,p=self.w['id'],self.p['id']
+        self.app.save_editing_guidelines(p,'本产品普通剪辑的专用测试要求')
         ref=self.upload(self.intro,'reference')
         b=eng.create_uploaded(p,w,dict(reference_id=ref['id'],matching_mode='semantic',mode='preview',rights_allowed=True))
         beat=dict(purpose='展示',action='旋转',subject='产品',composition='近景')
@@ -493,20 +644,21 @@ class EditingTest(unittest.TestCase):
                   'gaps':[{'reference_beat':2,'reason':'缺少独立实拍'}]}
         def audit(app,b,rows,paid,stop):
             return {span_key(x):{'verdict':'different_shoot'} for row in rows for x in row}
-        with patch('workbench.reference_structure.analyze',return_value={'beats':beats}), patch('vision_api.call',return_value=proposal), patch('workbench.reference.audit_choices',side_effect=audit), patch('workbench.reference.screen_sources',side_effect=lambda app,b,c:(c,[])):
+        with patch('workbench.reference_structure.analyze',return_value={'beats':beats}), patch('vision_api.call',return_value=proposal) as model, patch('workbench.reference.audit_choices',side_effect=audit), patch('workbench.reference.screen_sources',side_effect=lambda app,b,c:(c,[])):
             self.op(b,'plan')
+            model.assert_called_once()
+            self.assertNotIn('本产品普通剪辑的专用测试要求',model.call_args.args[1])
+            self.assertNotIn('剪辑总纲必须遵守',model.call_args.args[1])
             t=self.task(b)
             self.assertEqual(t['status'],'planned',t.get('error'))
-            self.assertEqual(t['plan']['parts'][0]['frames'],3)
-            gap=t['plan']['reference_gaps'][0]
-            self.assertEqual((gap['start_frame'],gap['frames']),(3,27))
+            self.assertEqual(t['plan']['parts'][0]['frames'],30)
+            self.assertEqual(t['plan']['reference_gaps'],[])
             self.op(b,'preview')
             t=self.task(b)
             self.assertEqual(t['status'],'awaiting_review',t.get('error'))
             self.assertEqual(t['preview']['report']['body_seconds'],1)
-            with self.assertRaisesRegex(Problem,'待补实拍'):
-                eng.action(p,w,b['id'],'output',dict(task_ids=[t['id']],content_confirmed=True,preview_sha256=t['preview']['sha256']))
-            self.assertFalse(self.task(b).get('human_reviewed',False))
+            self.op(b,'output',dict(task_ids=[t['id']],content_confirmed=True,preview_sha256=t['preview']['sha256']))
+            self.assertEqual(self.task(b)['output']['report']['body_seconds'],1)
 
     def test_diagnostics_and_regression_samples_are_versioned_and_scoped(self):
         from workbench.reference_review import diagnose,record

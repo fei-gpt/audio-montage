@@ -5,6 +5,23 @@ from pathlib import Path
 from montage import fingerprint, read, save
 
 VERSION='reference-v1'
+MATCH_CACHE='reference-match-v2'
+
+
+def reference_matching_cache(task_folder):
+    """Keep old prompts out of new selections without resending unresolved requests."""
+    from codex_vision import request_not_sent
+    from vision_json import decode_response
+    for receipt in (task_folder/'api-cache').glob('codex-*.attempt.json'):
+        prefix=receipt.with_suffix('').with_suffix('')
+        if prefix.with_suffix('.json').is_file() or request_not_sent(prefix):continue
+        raw=prefix.with_suffix('.response.txt')
+        if raw.is_file():
+            result,_=decode_response({'choices':[{'finish_reason':'stop','message':{
+                'content':raw.read_text(encoding='utf-8',errors='replace')}}]})
+            if isinstance(result,dict):continue
+        raise ValueError('旧参考选片请求结果不明，请先核查原请求，避免重复调用')
+    return task_folder/MATCH_CACHE
 
 MATCH_INSTRUCTIONS = (
     '本次按参考片匹配。在每个part写reference_beat（参考beats从1开始编号，按原顺序，可跳过或重复）。'
@@ -135,6 +152,20 @@ def fit_beat(candidate, seconds):
     return candidate['start'],candidate['frames']
 
 
+def extend_reference_parts(parts, beats, available):
+    """Use real footage after the chosen cut, before auditing its exact extent."""
+    for i,part in enumerate(parts):
+        beat=beats[part['reference_beat']-1]
+        stop=beats[parts[i+1]['reference_beat']-1]['start'] if i+1<len(parts) else beats[-1]['end']
+        wanted=round(stop*30)-round(beat['start']*30)
+        c=available[part['shot_id']]
+        start=part['start']
+        for span in c['safe_trim_ranges']:
+            if span['start']<=start+1e-6:
+                capacity=math.floor((min(c['end'],span['end'])-start)*30+1e-6)
+                part['frames']=max(part['frames'],min(wanted,capacity))
+
+
 def slot_frames(beat):
     return round(beat['end']*30)-round(beat['start']*30)
 
@@ -260,7 +291,7 @@ def select_slots(config, reference, candidates, batch, cache, allow_paid, check_
             if batch.get('variant_count',1)>1:
                 substitute=('优先满足 must_see。缺少完全对应的实拍时，可用同产品且展示目的相近的镜头，理由写明“替代表达”及具体差异，不声称看到了缺失的动作。'
                             '效果相近时优先选 variant_uses 较少的素材。明确禁止项和同源排除仍然适用。')
-            prompt=(MATCH_PROMPT+LIGHT_SWORD_MATCH+'剪辑总纲必须遵守。本次要求只能补充；冲突时报告冲突。\n'+batch.get('editing_guidelines','')+'\n你是替代素材剪辑师。选择能够表达同一展示目的的其他实拍，不要求复制演员身份、'
+            prompt=(MATCH_PROMPT+LIGHT_SWORD_MATCH+'以参考分镜的主体、动作、展示顺序和节奏选片。参考片连续展示同类动作时可连续匹配。\n你是替代素材剪辑师。选择能够表达同一展示目的的其他实拍，不要求复制演员身份、'
                     '字幕原文、服装、墨镜、场地及颜色。模型不用计算时长，列表只含本机确认能用的区间。'
                     +substitute+'不能把常亮说成开灯，旋转主体与运镜要分开，手持不等于拆卸。'
                     '从全片考虑各段。参考中某一处的独特布景优先留给那一段，其他段选角度和场景有变化的实拍。'

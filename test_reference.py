@@ -6,6 +6,22 @@ from montage import fingerprint
 from workbench.reference import analyze
 
 class ReferenceTests(unittest.TestCase):
+    def test_new_matching_policy_keeps_old_prompts_and_guards_unresolved_requests(self):
+        from montage import save
+        from workbench.reference import reference_matching_cache
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp)
+            legacy=folder/'api-cache'
+            save(legacy/'slots-1.json',{'prompt':'旧产品总纲'})
+            self.assertNotEqual(reference_matching_cache(folder),legacy)
+            save(legacy/'codex-original.attempt.json',{})
+            with self.assertRaisesRegex(ValueError,'结果不明'):
+                reference_matching_cache(folder)
+            (legacy/'codex-original.response.txt').write_text('{"parts":[]}',encoding='utf-8')
+            self.assertNotEqual(reference_matching_cache(folder),legacy)
+            save(legacy/'codex-original.json',{'parts':[]})
+            self.assertNotEqual(reference_matching_cache(folder),legacy)
+
     def test_reference_cut_aligns_to_third_frame_without_moving_the_end(self):
         from montage import save
         from workbench.reference_structure import align_to_picture

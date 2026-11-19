@@ -134,6 +134,15 @@ class Workbench:
 
     def __init__(self, root, executor=True):
         self.store=Store(root); self.root=self.store.root; self.secret=secrets.token_bytes(32); self.lock=threading.RLock()
+        from workbench.material_sorting import split_pending
+        for job in self.store.all('sorting'):
+            normalized=split_pending(job['segments'],job['sha256'])
+            changed=normalized!=job['segments']
+            job['segments']=normalized
+            if job['status']=='running':
+                job.update(status='failed',error='整理被重启中断，可手动补段或重新识别')
+                changed=True
+            if changed:self.store.put('sorting',job['workspace_id'],job)
         self.repair_legacy_snapshots()
         self.pool=ThreadPoolExecutor(max_workers=1) if executor else None
         for j in self.store.all('job'):
@@ -143,6 +152,25 @@ class Workbench:
         self.editing=Editing(self)
         from workbench.generation import Generation
         self.generation=Generation(self)
+        self.sword_pool=ThreadPoolExecutor(max_workers=1) if executor else None
+        if self.sword_pool:
+            for workspace in self.store.all('workspace'):
+                w=workspace['id']
+                for a in self.store.all('asset',w):
+                    status=a.get('sword_recognition',{}).get('status')
+                    if a.get('user_category') or not a.get('available'):continue
+                    if status=='queued':self.queue_sword(workspace['product_id'],w,a)
+                    if status=='running':
+                        a['sword_recognition']=dict(status='unrecognized',reason='工作台重启中断了识别，请人工核对')
+                        self.store.put('asset',w,a)
+
+    def queue_sword(self,p,w,a):
+        from workbench.sword_recognition import run
+        if self.sword_pool:
+            try:self.sword_pool.submit(run,self,p,w,a['id'],a['sha256'])
+            except RuntimeError:
+                a['sword_recognition']=dict(status='unrecognized',reason='识别队列未能启动')
+                self.store.put('asset',w,a)
     def product(self,p):
         product=self.store.get('product',p,'root')
         owner=product;seen={p}
@@ -231,6 +259,7 @@ class Workbench:
             self.asset_path(w,aid)
             a['user_category']={'labels':labels,'status':'已确认类别' if confirmed else '已修改，待确认',
                                 'confirmed':confirmed}
+            if a.get('sword_recognition'):a['sword_recognition']['status']='reviewed'
             self.store.put('asset',w,a)
         return {'saved':True}
 
@@ -571,6 +600,7 @@ class Workbench:
 
     def scan(self,p,w):
         self.workspace(p,w);from montage import probe,portrait_geometry,media_duration
+        auto_sword=self.product(p)['name'].strip().casefold() in {'lightplay','toy'}
         found=[];errors=[]
         with self.lock:
             catalog={}
@@ -608,6 +638,7 @@ class Workbench:
                             info=probe(path);portrait_geometry(info)
                             v=next(x for x in info['streams'] if x['codec_type']=='video')
                             a={'id':old['id'] if old else uid(),'workspace_id':w,'library_id':lib['id'],'path':str(path),'name':path.name,'kind':lib['kind'],'sha256':hash_,'duration':media_duration(info,'video'),'width':v['width'],'height':v['height'],'available':True,'version':(old or {}).get('version',0)+1}
+                            if auto_sword and not lib.get('category'):a['sword_recognition']={'status':'queued'}
                             if old:
                                 a['replaced_source']=True
                                 a['previous_hashes']=sorted((set(old.get('previous_hashes',[]))|{old['sha256']})-{hash_})
@@ -619,6 +650,7 @@ class Workbench:
                                 if not s.get('stale') and s.get('asset_sha256')!=hash_:
                                     s['stale']=True;self.store.put('shot',w,s)
                         catalog[path]=self.store.put('asset',w,a)
+                        if a.get('sword_recognition',{}).get('status')=='queued':self.queue_sword(p,w,a)
                         found.append(catalog[path])
                     except Exception as exc:
                         errors.append({'file':str(path),'error':str(exc)[:500]})
@@ -633,6 +665,11 @@ class Workbench:
                 c.execute('CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY, sha256 TEXT, path TEXT, kind TEXT, available INTEGER)')
                 c.executemany('INSERT OR REPLACE INTO media VALUES(?,?,?,?,?)',
                               ((a['id'],a['sha256'],a['path'],a['kind'],int(a['available'])) for a in catalog.values()))
+            if auto_sword:
+                workspace=self.store.get('workspace',w,p)
+                if workspace.get('sword_scan_errors',[])!=errors:
+                    workspace['sword_scan_errors']=errors
+                    self.store.put('workspace',p,workspace)
         return {'assets':found,'errors':errors,'count':len(found)}
     def create_job(self,p,w,kind,allow_paid=False,extra='',rights=False,asset_ids=None,provider=None,model=None,analysis_mode=None,force=False):
         if kind=='organize' and not self.asset_recognition_enabled:raise Problem('素材机器识别已暂停',409)
@@ -1132,7 +1169,7 @@ class Workbench:
                 shutil.rmtree(folder)
             raise
 
-    def export_shots(self,w,rows,folder):
+    def export_shots(self,w,rows,folder,*,max_duration=None):
         manifest=[]
         from montage import probe,portrait_geometry,media_duration
         for i,s in enumerate(rows):
@@ -1144,6 +1181,8 @@ class Workbench:
             if not times:raise Problem('无法读取实际帧边界')
             times.append(media_duration(info,'video'))
             ai=min(range(len(times)),key=lambda k:abs(times[k]-s['start']));bi=min(range(len(times)),key=lambda k:abs(times[k]-s['end']))
+            while max_duration and bi>ai and times[bi]>times[ai]+max_duration:
+                bi-=1
             if ai>=bi:raise Problem('选区没有有效视频帧')
             filters=f'[0:v:0]trim=start_frame={ai}:end_frame={bi},setpts=PTS-STARTPTS[v]'
             audio=any(x['codec_type']=='audio' for x in info['streams'])

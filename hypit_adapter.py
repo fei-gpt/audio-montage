@@ -33,14 +33,14 @@ def _hypit_command(value):
     )
 
 
-def _run(command, cwd=None):
+def _run(command, cwd=None, *, timeout=None):
     # Windows resolves .CMD/.BAT launchers through cmd.exe when typed in a
     # shell, but subprocess.run(list) does not perform that shell lookup.
     # Keep shell execution disabled and invoke the launcher explicitly.
     if os.name == 'nt' and command and Path(command[0]).suffix.lower() in {'.cmd', '.bat'}:
         command = [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', *command]
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
-                            encoding='utf-8', errors='replace')
+                            encoding='utf-8', errors='replace', timeout=timeout)
     if result.returncode:
         detail = (result.stderr or result.stdout)[-4000:]
         raise ValueError(f'Hypit 命令失败：{detail}')

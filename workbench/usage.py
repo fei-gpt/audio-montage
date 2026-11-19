@@ -140,13 +140,11 @@ def ledger(store, extra_paths=(), *, workspace=None):
     return records.events
 
 
-def check(store, task, batch):
+def usage_snapshot(store, task, batch):
     extra = [(c['path'], c['sha256']) for c in batch.get('clips', [])]
     if task.get('intro'):
         extra.append((task['intro'], task['intro_sha256']))
     records = read_ledger(store, extra, workspace=task['workspace_id'])
-    ranges_by_source=task_ranges(store,task,batch=batch)
-    records.require(ranges_by_source)
     occupied = {}
     for other in store.all('edit_task'):
         if other['id'] == task['id'] or other.get('output'):
@@ -154,11 +152,24 @@ def check(store, task, batch):
         if other.get('dedup_reserved') and other.get('status') in {'running', 'queued'}:
             for sha,ranges in task_ranges(store,other).items():
                 occupied.setdefault(sha,[]).append({'ranges':ranges})
-    for sha,ranges in ranges_by_source.items():
-        entries=[e for tid,e in records.events.get(sha,{}).items() if tid!=task['id']]
-        entries.extend(occupied.get(sha,[]))
-        if any(overlapping_uses(entries,interval)>=LIMIT for interval in ranges or [None]):
-            raise ValueError('素材区间已达到3次引用上限或剩余次数已被输出任务占用，请更换片段：'+sha[:12])
+    return records,occupied
+
+
+def usage_issue(snapshot, task_id, sha, interval):
+    records,occupied=snapshot
+    if sha in records.errors:return records.errors[sha]
+    entries=[e for tid,e in records.events.get(sha,{}).items() if tid!=task_id]
+    if overlapping_uses(entries+occupied.get(sha,[]),interval)>=LIMIT:
+        return '素材区间已达到3次引用上限或剩余次数已被输出任务占用，请更换片段：'+sha[:12]
+    return ''
+
+
+def check(store, task, batch):
+    snapshot=usage_snapshot(store,task,batch)
+    for sha,ranges in task_ranges(store,task,batch=batch).items():
+        for interval in ranges or [None]:
+            issue=usage_issue(snapshot,task['id'],sha,interval)
+            if issue:raise ValueError(issue)
 
 
 def sync(store, only_shas=None, *, workspace=None):

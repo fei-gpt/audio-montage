@@ -1,7 +1,7 @@
-function activeModule(){return ({'#editing':'editing','#narration':'narration','#generation':'generation'})[location.hash]||'materials'}
+function activeModule(){return ({'#sorting':'sorting','#editing':'editing','#narration':'narration','#generation':'generation'})[location.hash]||'materials'}
 function renderModuleNavigation(){
   const module=activeModule();
-  for(const [id,page] of [['homeNav','materials'],['narrationNav','narration'],['generationNav','generation'],['editingNav','editing']]){
+  for(const [id,page] of [['homeNav','materials'],['sortingNav','sorting'],['narrationNav','narration'],['generationNav','generation'],['editingNav','editing']]){
     const selected=module===page;
     const button=$('#'+id);button.classList.toggle('active',selected);
     if(selected)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
@@ -53,7 +53,7 @@ function editingHistory(batches,batch,data){
       <tbody>${data.rows.map(t=>`<tr><td>${esc(t.name)}${t.variant?`<div class="small muted">候选 ${t.variant} / ${batch.variant_count}</div>`:''}</td><td>${t.audio_duration==null?'—':t.audio_duration.toFixed(2)+' 秒'}</td><td>${badge(editStatusLabel(t))}${t.source_warning||t.error||['queued','running'].includes(t.status)?`<div class="small muted">${esc(t.source_warning||t.error||t.stage)}</div>`:''}</td>
         <td class="file-path">${esc(editOutputName(t.output)||'—')}</td>
         <td><div class="inline">${t.output?.media_url?editDownloadLink(t.output):t.preview&&!t.source_warning&&!closedEditStatuses.has(t.status)&&!['queued','running'].includes(t.status)?`<button data-edit-review="${esc(t.id)}">核对预览</button>`:'<button disabled>下载成片</button>'}
-        <button data-edit-detail="${esc(t.id)}">${t.output?'查看成片':t.preview?(t.source_warning?'查看旧预览':'查看预览'):closedEditStatuses.has(t.status)?'查看记录':'查看任务'}</button>
+        ${t.output||!t.preview||t.source_warning||closedEditStatuses.has(t.status)||['queued','running'].includes(t.status)?`<button data-edit-detail="${esc(t.id)}">${t.output?'查看成片':t.preview?(t.source_warning?'查看旧预览':'查看预览'):closedEditStatuses.has(t.status)?'查看记录':'查看任务'}</button>`:''}
         ${!t.source_warning&&(t.status==='needs_attention'||stoppedEditStatuses.has(t.status))?`<button type="button" data-edit-retry="${esc(t.id)}">${t.status==='needs_attention'?'重试':'继续'}</button>`:''}
         ${canRegenerate(t)?`<button data-edit-regenerate="${esc(t.id)}">沿用要求，重新选片</button>`:''}</div></td></tr>`).join('')}</tbody>
     </table></div>
@@ -87,7 +87,7 @@ function editingHome(){
   $('#editProduct').onchange=e=>{pid=e.target.value||null;wid=null;editingBatchId=null;render()};
   $('#openEditingGuidelines')?.addEventListener('click',()=>{
     dialog('剪辑总纲',`<form id="editingGuidelinesForm">
-      <label class="field"><span>${esc(p.name)} · 同产品共用</span>
+      <label class="field"><span>${esc(p.name)} · 同产品共用，参考视频剪辑除外</span>
         <textarea id="editingGuidelines" rows="12" maxlength="10000">${esc(p.editing_guidelines||'')}</textarea>
       </label>
       <button class="primary">保存剪辑总纲</button>
@@ -153,7 +153,7 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
       <button type="button" id="openNarrationHistory">前往 ElevenLabs 配音</button>`}</div>`:''}
   <div id="editNarrationUpload" class="refbox" style="margin-top:16px"><label class="field"><span id="editNarrationLabel">上传配音</span><input id="editNarration" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac" required><small id="editNarrationDuration" aria-live="polite"></small></label><p class="small muted" id="editAudioHint">画面使用当前账号素材库。</p></div>
   <div id="editBackgroundMusic" class="refbox" style="margin-top:12px"><label class="field"><span>本批背景音乐（可选）</span><select name="history_music_id" aria-label="背景音乐历史"><option value="">从历史选择音乐</option>${(w.background_music_history||[]).map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${m.duration.toFixed(2)} 秒</option>`).join('')}</select><input id="editMusic" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac"><small id="editMusicDuration" aria-live="polite"></small></label><label class="field"><span>音乐音量（%）</span><input type="number" name="music_volume" min="0" max="100" value="15"></label><p id="editBatchMusicSummary" class="small muted" aria-live="polite"></p><p class="small muted">音乐从每条视频的配音段开头播放，按各自时长裁切，播完后不循环。</p></div>
-  ${referenceMode?`<label class="field"><span>参考视频（竖屏 9:16，最多 120 秒）</span><input id="editReference" type="file" accept=".mp4,.mov,.mkv,.webm" required></label><p class="small muted">可只传参考片做无配音预览。</p>`:''}<div id="editScripts"><label class="field"><span>整段配音文案（可选）</span><textarea name="script_0" placeholder="粘贴与配音对应的整段文案，无需提供字幕文件"></textarea></label></div>
+  ${referenceMode?`<label class="field"><span>参考视频（任意画幅，最多 120 秒）</span><input id="editReference" type="file" accept=".mp4,.mov,.mkv,.webm" required></label><p class="small muted">按参考片的主体、动作和节奏匹配素材库镜头。可只传参考片做无配音预览。</p>`:''}<div id="editScripts"><label class="field"><span>整段配音文案（可选）</span><textarea name="script_0" placeholder="粘贴与配音对应的整段文案，无需提供字幕文件"></textarea></label></div>
   <label class="field"><span>使用哪一种素材识别结果？</span><select name="analysis_mode"><option value="simple" ${P().analysis_mode==='simple'?'selected':''}>简单展示结果</option><option value="standard" ${P().analysis_mode!=='simple'?'selected':''}>明确标准结果（含旧版记录）</option></select></label><label class="field"><span>剪辑匹配方式</span><select name="matching_mode"><option value="duration">时长匹配 · 按断句长度选素材（不调用模型）</option>${P()?.sentence_editing_only?'':`<option value="semantic">语义匹配 · 按文案意思选画面（调用模型）</option>`}</select></label><label class="field" id="editSemanticRequest"><span>本批通用剪辑要求（可选）</span><textarea name="request" placeholder="第一镜必须用四把光剑旋转&#10;最后一镜优先用带货指引"></textarea><small>按时长选片时，用素材类别名称指定第几镜、最后一镜或时间码。多条要求用换行或分号分隔。<br><strong>必须</strong>：第一镜必须用四把光剑旋转，只接受这个标签。最后一镜必须用四把光剑旋转+旋转到停下，先找恰好带这两个标签的素材。素材不足时，可用只带其中一个标签的素材补上。<br><strong>优先</strong>：最后一镜优先用带货指引。找不到合适镜头时可以换别的类别。<br><strong>排除</strong>：第三镜必须用单把光剑旋转，排除静止到旋转。</small></label>
   ${referenceMode?'':'<label class="field" id="editTargetDuration"><span>成片时长</span><select name="length_mode"><option value="voice">跟随配音</option><option value="music">跟随背景音乐</option><option value="custom">自定义秒数</option></select><input name="target_duration" aria-label="自定义成片秒数" placeholder="自定义秒数" type="number" min="0.1" max="600" step="0.001"></label>'}
   <label class="field" id="editVariantField"><span>候选数量</span><select name="variant_count"><option value="1">1 条</option><option value="5">5 条</option><option value="10">10 条</option><option value="15">15 条</option></select><small>多条候选沿用同一要求，先生成预览供你选择。只统计正式导出的素材引用。</small></label>
@@ -410,6 +410,107 @@ function regenerateEdit(id){
     <button id="regenerateSubmit" class="primary">开始重新选片</button>`);
   $('#regenerateSubmit').onclick=()=>{if(!$('#regeneratePaid').checked)return toast('请允许本次模型调用');launch(true)};
 }
+function editReplacementPicker(panel,issues,batch,submit){
+  const selected=new Map();
+  const unique=batch.variant_count>1||Boolean(batch.pairing_report)||batch.rules.distinct_variant_sources||batch.rules.use_prepared_files;
+  const media=new Map((W()?.assets||[]).map(asset=>[asset.id,asset.media_url]));
+  panel.innerHTML=issues.map(issue=>`<fieldset class="refbox"><legend>第 ${issue.index+1} 镜 · 替换 ${esc(issue.name)}</legend>
+    <label class="field">搜索备选素材<input type="search" placeholder="文件名、编号或类别"></label>
+    <label class="field">备选素材<select></select></label><span class="small muted" data-count></span>
+    <div data-player></div></fieldset>`).join('')+'<button class="primary" type="button" data-submit disabled></button><p data-result role="status"></p>';
+  const fields=Array.from(panel.querySelectorAll('fieldset'));
+  const button=panel.querySelector('[data-submit]'),result=panel.querySelector('[data-result]');
+  function redrawField(field,i){
+      const query=field.querySelector('input').value.trim().toLowerCase();
+      const select=field.querySelector('select'),current=selected.get(i);
+      const rows=issues[i].options.map((part,index)=>({part,index})).filter(({part})=>{
+        if(part===current)return true;
+        if(![part.source_name,...(part.labels||[])].join(' ').toLowerCase().includes(query))return false;
+        return !Array.from(selected.entries()).some(([other,chosen])=>other!==i&&part.asset_sha256===chosen.asset_sha256&&
+          (unique||Math.min(part.start+part.frames/30,chosen.start+chosen.frames/30)>Math.max(part.start,chosen.start)+1e-6));
+      });
+      select.innerHTML='<option value="">请选择素材</option>'+rows.map(({part,index})=>`<option value="${index}">${esc(part.source_name)} · ${part.start.toFixed(2)}–${(part.start+part.frames/30).toFixed(2)} 秒 ${esc((part.labels||[]).join('、'))}</option>`).join('');
+      select.value=current?String(issues[i].options.indexOf(current)):'';
+      field.querySelector('[data-count]').textContent=rows.length?`可选 ${rows.length} 个区间`:'没有匹配的备选，请调整搜索词或其他镜头的选择';
+  }
+  function redraw(){
+    fields.forEach(redrawField);
+    button.disabled=selected.size!==issues.length;
+    button.textContent=`替换并重新生成预览（${selected.size}/${issues.length}）`;
+  }
+  fields.forEach((field,i)=>{
+    field.querySelector('input').oninput=()=>redrawField(field,i);
+    field.querySelector('select').onchange=event=>{
+      const value=event.target.value,part=value===''?null:issues[i].options[Number(value)];
+      const player=field.querySelector('[data-player]');player.replaceChildren();
+      if(part){
+        selected.set(i,part);
+        const url=media.get(part.asset_id);
+        if(url)player.innerHTML=`<video class="preview-video" aria-label="第 ${issues[i].index+1} 镜备选片段" controls playsinline preload="metadata" src="${esc(url)}#t=${part.start},${part.start+part.frames/30}"></video>`;
+      }else selected.delete(i);
+      result.textContent='';
+      redraw();
+    };
+  });
+  button.onclick=async()=>{
+    button.disabled=true;
+    fields.forEach(field=>field.disabled=true);
+    button.textContent='正在提交替换…';
+    try{
+      const changes={};
+      for(const [i,part] of selected)changes[issues[i].index]=[part.shot_id,part.asset_sha256,part.start];
+      await submit(changes);
+    }catch(error){result.textContent=error.message}
+    finally{fields.forEach(field=>field.disabled=false);redraw()}
+  };
+  redraw();
+}
+async function inspectEditPreview(batch,task,panel,finalButton,workspace){
+  const wasDisabled=finalButton?.disabled;
+  if(finalButton)finalButton.disabled=true;
+  const endpoint=workspace+'/editing/batches/'+batch.id+'/';
+  function reselect(){
+    if(!canRegenerate(task))return;
+    panel.insertAdjacentHTML('beforeend','<button type="button" data-reselect>沿用要求，重新选片</button>');
+    panel.querySelector('[data-reselect]').onclick=()=>regenerateEdit(task.id);
+  }
+  async function check(showOptions){
+    try{await loadOptions(showOptions)}catch(error){
+      panel.textContent='检查未完成：'+error.message+' ';
+      panel.insertAdjacentHTML('beforeend','<button type="button">重新检查</button>');
+      panel.querySelector('button').onclick=()=>check(showOptions);
+    }
+  }
+  async function loadOptions(showOptions){
+    panel.textContent=showOptions?'正在查找等长备选镜头…':'正在检查输入文件、素材版本和引用次数…';
+    const report=await api(endpoint+(showOptions?'replacement-options':'preview-check'),'POST',{task_id:task.id});
+    if(!panel.isConnected)return;
+    const blocked=report.fixed.length||report.issues.length;
+    if(finalButton)finalButton.disabled=wasDisabled||Boolean(blocked);
+    if(!blocked){panel.textContent='输入文件与素材引用检查通过';return}
+    panel.innerHTML=report.fixed.map(message=>`<p class="warning">${esc(message)}</p>`).join('')+
+      report.issues.map(issue=>`<p class="warning">第 ${issue.index+1} 镜 · ${esc(issue.name)} · ${esc(issue.reason)}</p>`).join('');
+    if(report.fixed.length||!report.issues.length)return;
+    if(!report.issues.every(issue=>issue.replaceable)){
+      panel.insertAdjacentHTML('beforeend','<p>镜头时长需要重新规划。</p>');reselect();return
+    }
+    if(!showOptions){
+      panel.insertAdjacentHTML('beforeend','<button type="button">仅替换有问题的镜头</button>');
+      panel.querySelector('button').onclick=()=>check(true);
+      return;
+    }
+    if(report.issues.some(issue=>!issue.options.length)){
+      panel.insertAdjacentHTML('beforeend',`<p>第 ${report.issues.filter(issue=>!issue.options.length).map(issue=>issue.index+1).join('、')} 镜缺少等长备选。</p>`);reselect();return
+    }
+    editReplacementPicker(panel,report.issues,batch,async changes=>{
+      await api(endpoint+'repair-shots','POST',{task_ids:[task.id],plan_revision:task.plan_revision,changes});
+      if(panel.isConnected&&$('#dialog').open)$('#dialog').close();
+      toast('已提交换镜，可在原记录查看新预览的生成进度');
+      await refresh();
+    });
+  }
+  await check(false);
+}
 function editTaskDialog(id){
   const b=currentEditBatch(),t=b.tasks.find(t=>t.id===id);if(!t)return;
   const busy=['queued','running'].includes(t.status),off=closedEditStatuses.has(t.status);
@@ -418,6 +519,7 @@ function editTaskDialog(id){
   <p class="small file-path">${b.rules.reference_only?'参考片（无配音）':b.rules.audio_kind==='music'?'音乐':'配音'}：${esc(t.name)}${t.intro?`<br>原批次前段：${esc(t.intro)}`:''}</p>${t.individual_request?`<details open><summary>单条补充要求</summary><p class="result-note">${esc(t.individual_request)}</p></details>`:''}${t.script?`<details><summary>用户提供的整段文案</summary><p class="result-note">${esc(t.script)}</p></details>`:''}
   ${t.output||t.preview?`<video class="preview-video" controls playsinline preload="metadata" src="${esc((t.output||t.preview).media_url)}"></video>${t.output?`<p>${editDownloadLink(t.output)} · ${t.human_reviewed?'已确认预览':'未人工审片'}</p>`:''}`:''}
   ${t.script_check&&!t.script_check.matched?'<p class="warning">整段文案与音频识别文字存在差异，请核对下方时间轴。</p>':''}${t.timeline?`<details><summary>音频时间轴（${t.timeline.segments.length}段，来源 ${esc(t.timeline.source)}）</summary>${t.timeline.segments.map(s=>`<p class="small">${s.start.toFixed(2)}–${s.end.toFixed(2)} · ${esc(s.text)}</p>`).join('')}</details>`:''}
+  ${!busy&&!off&&(t.plan||t.status==='needs_attention')?'<div id="editPreviewCheck" aria-live="polite"></div>':''}
   ${b.reference?'<button id="inspectReference">查看逐镜诊断与纠错</button>':''}
   ${referenceMatchPanel(b,t,busy||off)}
   ${t.reference_analysis?`<details><summary>参考视频结构（采样初审，非精确切点）</summary>${t.reference_analysis.beats.map(x=>`<p>${x.start}–${x.end}秒 · ${esc(x.purpose)} · ${esc(x.action)} · ${esc(x.composition)}</p>${x.must_see?`<p>必须看见 · ${esc(x.must_see.join('；'))}</p>${x.flexible?.length?`<p>允许变化 · ${esc(x.flexible.join('；'))}</p>`:''}`:''}`).join('')}</details>`:''}${t.plan?`<details><summary>剪辑清单（${t.plan.parts.length}段）</summary>${t.plan.parts.map(p=>`<p class="small">${p.timeline_start.toFixed(2)}–${p.timeline_end.toFixed(2)} · ${esc(p.reason)}</p>`).join('')}<label class="field"><span>修正清单 JSON（只能使用已确认镜头与安全区间）</span><textarea id="editPlanJson" style="min-height:180px">${esc(JSON.stringify(t.plan,null,2))}</textarea></label><button id="editSavePlan" ${busy||off?'disabled':''}>保存修改并重新预览</button></details>`:''}
@@ -428,6 +530,8 @@ function editTaskDialog(id){
   bindReferenceMatchPanel(b,t,busy||off);
   $('#editSavePlan')?.addEventListener('click',()=>{try{editOperation('save-plan',id,{plan:JSON.parse($('#editPlanJson').value),plan_revision:t.plan_revision})}catch(e){toast('JSON 格式错误：'+e.message)}});
   $('#editReselect')?.addEventListener('click',()=>regenerateEdit(id));
+  const preflight=$('#editPreviewCheck');
+  if(preflight)inspectEditPreview(b,t,preflight,$('#editFinal'),wb());
   $('#editFinal')?.addEventListener('click',()=>{editOperation('output',id,{content_confirmed:b.rules.mode==='preview',preview_sha256:t.preview?.sha256,plan_revision:t.plan_revision})});
 }
 
@@ -449,8 +553,8 @@ function referenceMatchPanel(batch, task, locked) {
   }).join('');
   if (!rows) return '';
   return `<section><h3>参考分镜与实拍对照</h3>
-    ${task.plan.reference_gaps?.length?`<p class="warning">待补区间（预览保留原时长，补齐后可输出）</p>${task.plan.reference_gaps.map(g=>`<p class="small">第 ${g.beat} 段 · ${(g.start_frame/30).toFixed(2)}–${((g.start_frame+g.frames)/30).toFixed(2)} 秒 · ${esc(g.reason)}</p>`).join('')}`:''}
-    ${omitted.length&&!task.plan.reference_gaps?`<p class="warning">本次未采用的参考分镜：${omitted.join('、')}</p>`:''}
+    ${task.plan.reference_gaps?.length?`<p class="warning">旧预览含空缺，请重新生成预览以衔接实拍镜头</p>${task.plan.reference_gaps.map(g=>`<p class="small">第 ${g.beat} 段 · ${(g.start_frame/30).toFixed(2)}–${((g.start_frame+g.frames)/30).toFixed(2)} 秒 · ${esc(g.reason)}</p>`).join('')}`:''}
+    ${omitted.length&&!task.plan.reference_gaps?.length?`<p class="warning">本次未采用的参考分镜：${omitted.join('、')}</p>`:''}
     ${(Array.isArray(task.reference_notes)?task.reference_notes:[]).map(n=>`<p class="small">${esc(typeof n==='string'?n:n.reason)}</p>`).join('')}
     ${task.reference_screen?`<p class="small">全库初筛排除 ${task.reference_screen.excluded.length} 个区间。入选与备选的拼图复核另排除 ${Object.values(task.reference_verdicts||{}).filter(v=>v.verdict!=='different_shoot').length} 个存疑选区。</p>`:''}${rows}</section>`;
 }

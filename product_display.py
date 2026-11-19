@@ -67,6 +67,21 @@ LIGHT_SWORD_ROTATIONS = {
     'single': {'单把光剑旋转', '单个光剑旋转'},
     'four': {'四把合体光剑旋转', '四把光剑旋转', '四个光剑旋转', '四个合体光剑旋转'},
 }
+FOUR_SWORD_FAULT_PROMPT = (
+    '逐段检查四把合体光剑实际旋转时各支剑的发光端。若能看清某支剑随中心转动，'
+    '其发光端熄灭而其他支仍亮，标记 light_out=true，记录具体可见依据。'
+    '先定位手中同一十字中心，逐一沿四条臂检查末端：三团彩色光带加一支可见的黑色未发光剑头随转，正是故障。要看暗支而非只数彩色拖影；交代各支数量。熄灭可以在镜头开始前已发生。按故障开始、恢复、停止旋转分别切开时间区间。'
+    '正常灯效切换、遮挡、出画、拖影、黑色手柄、单帧曝光或仅仅看不清都不足以确定故障。'
+    '单把、静止、拆装及其他非四把旋转区间一律 light_out=false。'
+)
+
+
+def four_sword_fault(labels, light_out, product):
+    aliases = product.get('shot_category_aliases', {})
+    four = {aliases.get(x,x) for x in LIGHT_SWORD_ROTATIONS['four']}
+    return light_out is True and bool(four.intersection(labels))
+
+
 LIGHT_SWORD_ROTATION_START = {'静止到旋转', '从静止到旋转', '从静止到开始旋转', '从停下到转'}
 
 LIGHT_SWORD_CUT = '''

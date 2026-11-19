@@ -8,6 +8,13 @@ from montage import fingerprint,read,save
 from vision_json import decode_response
 
 
+def request_not_sent(prefix):
+    errors=Path(str(prefix)+'.stderr.log')
+    events=Path(str(prefix)+'.events.jsonl')
+    return (errors.is_file() and events.is_file() and events.stat().st_size==0
+            and errors.read_text(encoding='utf-8',errors='replace').lstrip().startswith('Error loading config.toml:'))
+
+
 def call(config,prompt,evidence,cache,allow_paid,*,output_schema=None):
     model=config.get('model')
     if not isinstance(model,str) or not model.strip():raise ValueError('Codex必须明确指定模型')
@@ -28,8 +35,7 @@ def call(config,prompt,evidence,cache,allow_paid,*,output_schema=None):
         errors=Path(str(prefix)+'.stderr.log');events=Path(str(prefix)+'.events.jsonl')
         # A config parser rejection happens before a session or model request.
         # Only this proven local failure may be retried after correcting config.
-        not_sent=errors.is_file() and errors.read_text(encoding='utf-8',errors='replace').lstrip().startswith('Error loading config.toml:') and events.is_file() and events.stat().st_size==0
-        if not not_sent:raise ValueError('Codex此前请求结果不明，记录已保留；不自动重发或换模型')
+        if not request_not_sent(prefix):raise ValueError('Codex此前请求结果不明，记录已保留；不自动重发或换模型')
         if not allow_paid:raise ValueError('需要允许本次Codex调用，可能消耗账号额度')
         history=cache/'attempt-history'/('local-config-'+uuid4().hex);history.mkdir(parents=True)
         save(history/'classification.json',{'model_request_sent':False,'reason':'CLI configuration rejected before session startup','automatic_paid_retry':False})

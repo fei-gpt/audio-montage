@@ -130,6 +130,7 @@ class Handler(BaseHTTPRequestHandler):
                         if item.get('upload_id'):
                             item['used']=item['upload_id'] in used_uploads
                             item['media_url']=self.media_url(p['id'],w['id'],'narration',item['upload_id'])
+                    w['sorting']=s.all('sorting',w['id'])
                     w['generations']=s.all('generation',w['id'])
                     for g in w['generations']:
                         if g.get('intro'):g['intro']['media_url']=self.media_url(p['id'],w['id'],'gen',g['id'])
@@ -183,6 +184,13 @@ class Handler(BaseHTTPRequestHandler):
         m=re.fullmatch(r'workspaces/([a-f0-9]+)(?:/(.*))?',tail or '')
         if not m:raise Problem('接口不存在',404)
         w,rest=m.groups();ws=app.workspace(p,w)
+        if rest=='sorting' and method=='POST':
+            from workbench.material_sorting import start
+            return start(app,p,w,b)
+        sorting=re.fullmatch(r'sorting/([a-f0-9]{32})/review',rest or '')
+        if sorting and method=='POST':
+            from workbench.material_sorting import review
+            return review(app,p,w,sorting[1],b)
         if rest=='editing/narration-request/inspect' and method=='POST':return app.editing.inspect_narration_request(p,w,b)
         if rest=='editing/pairs/inspect' and method=='POST':return app.editing.inspect_pairs(p,w,b)
         if rest=='narrations' and method=='POST':return app.generation.create_narrations(p,w,b)
@@ -276,6 +284,10 @@ def main():
     server=make_server(args.data,args.port);print(f'素材工作台 http://127.0.0.1:{server.server_port}',flush=True)
     server.restart_args=['--port',str(server.server_port),'--data',str(Path(args.data).resolve())]
     try:server.serve_forever()
-    finally:server.app.generation.close();server.app.pool.shutdown(wait=False,cancel_futures=True);server.server_close()
+    finally:
+        server.app.generation.close()
+        server.app.sword_pool.shutdown(wait=False,cancel_futures=True)
+        server.app.pool.shutdown(wait=False,cancel_futures=True)
+        server.server_close()
 
 if __name__=='__main__':main()

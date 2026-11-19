@@ -2,7 +2,7 @@
 from asset_index import digest_json
 from montage import read
 from workbench.backend import Problem
-from workbench.reference import span_key
+from workbench.reference import MATCH_CACHE,span_key
 
 STAGES = ('reference', 'recognition', 'ranking', 'trim')
 SCOPES = ('shot', 'product', 'general')
@@ -27,10 +27,12 @@ def diagnose(app, p, w, bid, tid):
     rendered = bool(preview and preview.get('plan_revision') == task.get('plan_revision'))
     intro = preview.get('report', {}).get('intro_seconds', 0)
     slots = {}
-    for file in sorted((root/'api-cache').glob('slots-*.json')):
+    current_cache=root/MATCH_CACHE
+    cache=current_cache if current_cache.is_dir() else root/'api-cache'
+    for file in sorted(cache.glob('slots-*.json')):
         for group in read(file).get('slots', []):
             slots[group['reference_beat']] = group
-    shortlist = optional(root/'reference-shortlist.json', [])
+    shortlist = optional((current_cache if current_cache.is_dir() else root)/'reference-shortlist.json', [])
     cases = [c for c in app.store.all('reference_case', w)
              if c['source_sha256'] == batch['reference']['sha256']]
     rows = []

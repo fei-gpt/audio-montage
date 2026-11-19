@@ -131,6 +131,7 @@ def analyze(app, workspace, upload, allow_paid, template=None, *, timed=False):
     else:
         # Older attempts used the base prompt. Preserve their request identity on resume.
         if not any((folder/'model-cache').glob('*.attempt.json')):
+            prompt+='\n参考片可使用任意画幅。提炼每段的主体、可见动作、展示目的和节奏，画幅差异属于可调整的构图条件。'
             prompt+='\n观察部件数量、连接处和双手接触前后状态，区分同一物件转动、改变组合形态和切镜。观察不到分离过程时只记录可见状态。'
             prompt+=LIGHT_SWORD_OBSERVATION
             if timed:

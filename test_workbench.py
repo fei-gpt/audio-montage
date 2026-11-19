@@ -31,6 +31,169 @@ class WorkbenchTest(unittest.TestCase):
         with self.assertRaises(Problem):self.app.media(self.p['id'],self.b['id'],'asset',a['id'],self.app.media_signature(self.p['id'],self.b['id'],'asset',a['id']))
         with self.assertRaises(Problem):self.app.export(self.p['id'],self.b['id'],['nonexistent'])
 
+    def test_sort_original_review_publish_and_isolate(self):
+        from workbench.material_sorting import start,review
+        p,w=self.p['id'],self.w['id']
+        asset=self.attach()
+        data=dict(asset_id=asset['id'],allow_paid=True)
+        response=dict(segments=[dict(start=.2,end=1.6,labels=[],evidence='静态展示',
+                                     continues_before=False,continues_after=False)])
+        with patch('vision_api.call',return_value=response):
+            # Exercise the actual interval publisher independently of Hypit installation.
+            with patch('workbench.material_sorting.detect',return_value=[
+                    dict(id='candidate',status='pending',reason='静态展示',start=.2,end=1.6,labels=[])]):
+                job=start(self.app,p,w,data)
+        change=dict(decision='confirm',segment_id='candidate',start=.3,end=1.5,labels=[])
+        with self.assertRaises(Problem):review(self.app,p,self.b['id'],job['id'],change)
+        result=review(self.app,p,w,job['id'],change)
+        self.assertEqual(result['segments'][0]['status'],'confirmed')
+        review(self.app,p,w,job['id'],change)
+        clips=[a for a in self.app.visible_assets(w) if a['kind']=='prepared']
+        self.assertEqual(len(clips),1)
+        self.assertAlmostEqual(clips[0]['duration'],1.2,places=2)
+        self.app.scan(p,w)
+        for prepared in (True,False):
+            candidate,=self.app.editing.candidates(p,w,use_prepared_files=prepared)
+            self.assertEqual(candidate['origin_sha256'],asset['sha256'])
+        with self.assertRaisesRegex(ValueError,'本批素材'):
+            self.app.editing.check_batch_sources(dict(variant_count=2,rules={}),
+                dict(id='two',batch_id='batch'),[candidate],
+                [dict(id='one',batch_id='batch',status='completed',plan=dict(parts=[
+                    dict(asset_sha256='different',origin_sha256=asset['sha256'])]))])
+
+    def test_four_sword_light_out_is_confined_to_rotating_interval(self):
+        from product_display import four_sword_fault
+        from workbench.material_sorting import review
+        for label in ('单把光剑旋转','静态展示','拆分光剑','展示不同灯效'):
+            self.assertFalse(four_sword_fault([label],True,{}))
+        self.assertFalse(four_sword_fault(['四把光剑旋转'],False,{}))
+        self.assertTrue(four_sword_fault(['四把合体光剑旋转'],True,{}))
+        p,w=self.p['id'],self.w['id']
+        a=self.attach()
+        fault=dict(id='fault',start=0,end=.8,status='fault',reason='一支熄灯',labels=['四把光剑旋转'])
+        j=self.app.store.put('sorting',w,dict(asset_id=a['id'],sha256=a['sha256'],status='ready',segments=[fault]))
+        with self.assertRaisesRegex(Problem,'熄灯故障'):
+            review(self.app,p,w,j['id'],dict(decision='confirm',start=.6,end=2,labels=[]))
+        result=review(self.app,p,w,j['id'],dict(decision='confirm',start=.8,end=2,labels=[]))
+        self.assertEqual(result['segments'][-1]['status'],'confirmed')
+
+    def test_sort_skips_subsecond_intervals(self):
+        from workbench.material_sorting import split_pending,review
+        p,w=self.p['id'],self.w['id']
+        asset=self.attach()
+        row=dict(id='short',status='pending',start=0,end=.999,labels=[],reason='静态展示')
+        exact=dict(row,id='exact',end=1)
+        self.assertEqual(split_pending([row,exact],asset['sha256']),[exact])
+        job=self.app.store.put('sorting',w,dict(asset_id=asset['id'],workspace_id=w,
+                               sha256=asset['sha256'],segments=[row,exact],status='ready'))
+        with patch.object(self.app,'export_shots') as encode:
+            for sid in ('short',None):
+                result=review(self.app,p,w,job['id'],dict(decision='confirm',segment_id=sid,start=0,end=.9))
+                self.assertTrue(result['skipped_short'])
+            encode.assert_not_called()
+        change=dict(decision='confirm',segment_id='exact',start=0,end=1,labels=[])
+        with patch('workbench.material_sorting.media_duration',return_value=.99):
+            self.assertTrue(review(self.app,p,w,job['id'],change)['skipped_short'])
+        self.assertFalse(any(a['kind']=='prepared' for a in self.app.visible_assets(w)))
+        result=review(self.app,p,w,job['id'],dict(change,segment_id=None))
+        self.assertEqual(result['segments'][-1]['status'],'confirmed')
+
+    def test_sort_long_action_across_windows(self):
+        from workbench.material_sorting import detect,review,split_pending
+        p,w=self.p['id'],self.w['id']
+        subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i',
+                        'color=red:s=90x160:r=30000/1001:d=30','-c:v','libx264',
+                        str(self.a_dir/'same.mp4')],check=True)
+        asset=self.attach()
+        def tiles(args,cwd,timeout):
+            if args[2]=='probe':return '{"frameRate":29.97,"duration":29.123367}'
+            folder=Path(cwd)/args[-1]
+            folder.mkdir()
+            (folder/'tile.jpg').touch()
+        def window(start,end,before,after):
+            return dict(segments=[dict(start=start,end=end,continues_before=before,continues_after=after,
+                        labels=['旋转'],evidence='连续旋转')])
+        with patch('workbench.material_sorting._hypit_command',return_value='hypit'), \
+             patch('workbench.material_sorting._run',side_effect=tiles), \
+             patch('vision_api.call',side_effect=[window(20,24,False,True),window(24,29.1234,True,False)]):
+            rows=detect(self.app,w,asset,self.app.product(p))
+        def bounds(rows):
+            return [(r['start'],r['end']) for r in rows]
+        def check_ranges(pieces,start,end):
+            ranges=bounds(pieces)
+            self.assertEqual((ranges[0][0],ranges[-1][1]),(start,end))
+            self.assertEqual([b for a,b in ranges[:-1]],[a for a,b in ranges[1:]])
+            self.assertEqual(len({r['id'] for r in pieces}),len(pieces))
+            self.assertTrue(all(1.49999999<=b-a<=4 for a,b in ranges))
+        check_ranges(rows,20,29.123367)
+        self.assertTrue(all(r['labels']==['旋转'] for r in rows))
+        for length in (3,4,4.01,8,8.01,60):
+            original=[dict(rows[0],start=0,end=length)]
+            pieces=split_pending(original,'source-one')
+            check_ranges(pieces,0,length)
+            if length<=4:self.assertEqual(pieces,original)
+            else:
+                self.assertEqual(bounds(pieces),bounds(split_pending(original,'source-one')))
+                self.assertNotEqual(bounds(pieces),bounds(split_pending(original,'source-two')))
+                self.assertGreater(len({round(b-a,3) for a,b in bounds(pieces)}),1)
+        job=self.app.store.put('sorting',w,dict(asset_id=asset['id'],workspace_id=w,
+                               sha256=asset['sha256'],segments=rows,status='ready'))
+        change=dict(decision='confirm',start=0,end=8,labels=['旋转'])
+        for attempt in range(2):
+            job=review(self.app,p,w,job['id'],change)
+            if attempt==0:saved=job['segments']
+            else:self.assertEqual(job['segments'],saved)
+        check_ranges(saved[len(rows):],0,8)
+        row=saved[len(rows)]
+        review(self.app,p,w,job['id'],dict(change,segment_id=row['id'],end=row['end']))
+        clip,=[a for a in self.app.visible_assets(w) if a['kind']=='prepared']
+        self.assertLessEqual(clip['duration'],4)
+        self.assertAlmostEqual(clip['duration'],row['end']-row['start'],delta=.04)
+
+    def test_new_sword_scan_suggests_once_and_preserves_review(self):
+        from workbench.sword_recognition import run
+        app=self.app;p=self.p['id'];w=self.w['id']
+        old=self.attach()
+        app.update_product(p,dict(name='lightplay'))
+        shutil.copy2(self.video,self.a_dir/'new.mp4')
+        (self.a_dir/'broken.mp4').write_bytes(b'invalid')
+        with patch.object(app,'queue_sword') as queue:
+            app.scan(p,w);app.scan(p,w)
+            queue.assert_called_once()
+        self.assertNotIn('sword_recognition',app.store.get('asset',old['id'],w))
+        a=queue.call_args.args[2]
+        self.assertIn('broken.mp4',app.workspace(p,w)['sword_scan_errors'][0]['file'])
+        suggestion=dict(labels=['单把光剑旋转'],ranges=[dict(label='单把光剑旋转',start=0,end=1)],
+                        status='suggested',reason='剑身绕指孔转动')
+        with patch('workbench.sword_recognition.recognize',return_value=suggestion) as classify:
+            run(app,p,w,a['id'],a['sha256']);run(app,p,w,a['id'],a['sha256'])
+            classify.assert_called_once()
+        current=app.store.get('asset',a['id'],w)
+        self.assertFalse(current['category_review']['confirmed'])
+        self.assertEqual(current['category_review']['labels'],suggestion['labels'])
+        app.confirm_asset_category(p,w,a['id'],suggestion['labels'])
+        self.assertEqual(app.store.get('asset',a['id'],w)['sword_recognition']['status'],'reviewed')
+
+    def test_sword_failure_and_manual_edit_during_recognition(self):
+        from workbench.sword_recognition import run
+        app=self.app;p=self.p['id'];w=self.w['id'];app.update_product(p,dict(name='toy'))
+        owner=app.create_product('lightplay')
+        owner['profile']={'understood_at':'today'}
+        app.store.put('product','root',owner)
+        app.reference_knowledge(p,[owner['id']])
+        a=self.attach()
+        with patch('workbench.sword_recognition.recognize',side_effect=RuntimeError('Hypit 取帧失败')):
+            run(app,p,w,a['id'],a['sha256'])
+        current=app.store.get('asset',a['id'],w)
+        self.assertEqual(current['sword_recognition']['status'],'unrecognized')
+        self.assertIn('取帧失败',current['sword_recognition']['reason'])
+        current['sword_recognition']={'status':'queued'};app.store.put('asset',w,current)
+        def human(*args):
+            app.confirm_asset_category(p,w,a['id'],['单把光剑旋转'])
+            raise ValueError('识别中断')
+        with patch('workbench.sword_recognition.recognize',side_effect=human):run(app,p,w,a['id'],a['sha256'])
+        self.assertEqual(app.store.get('asset',a['id'],w)['sword_recognition']['status'],'reviewed')
+
     def test_product_rename_preserves_shared_editing_rules_and_refreshes_builtin_template(self):
         app=self.app
         owner=app.create_product('lightplay')
