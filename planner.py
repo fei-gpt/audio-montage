@@ -231,9 +231,9 @@ def apply_plan(args):
             row = db.execute('SELECT * FROM clips WHERE id=?', (selection['clip_id'],)).fetchone()
             if not row or not row['reviewed'] or ix.digest_json(json.loads(row['labels'])) != selection['labels_sha256']:
                 raise ValueError('素材标注已改变，请重新生成方案')
-            from montage import portrait_geometry, probe
+            from montage import video_geometry, probe
             if selection['path'] not in media_cache:
-                portrait_geometry(probe(selection['path']))
+                video_geometry(probe(selection['path']))
                 media_cache[selection['path']] = fingerprint(selection['path'])
             if selection.get('asset_hash') != row['asset_hash'] or selection.get('asset_hash') != media_cache[selection['path']]:
                 raise ValueError('素材已改变，请重新生成方案')

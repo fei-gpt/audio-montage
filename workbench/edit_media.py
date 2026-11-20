@@ -6,7 +6,7 @@ looping, aspect-ratio conversions or invented video frames are permitted.
 import math
 import subprocess
 from pathlib import Path
-from montage import probe, portrait_geometry, media_duration, fingerprint
+from montage import probe, video_geometry, fit_video_filter, portrait_geometry, media_duration, fingerprint
 
 
 def run(args):
@@ -25,7 +25,7 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
     intro_audio_tail=None
     for role,files in [('intro',head),('outro',tail)]:
         for path in files:
-            pi=probe(path);portrait_geometry(pi);seconds=media_duration(pi,'video')
+            pi=probe(path);video_geometry(pi);seconds=media_duration(pi,'video')
             # Match the fps filter's nearest-frame rounding at the end of the clip.
             frames=math.floor(seconds*30+0.50002)
             if any(s['codec_type']=='audio' for s in pi['streams']):
@@ -66,15 +66,17 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
             run(['ffmpeg','-v','error','-nostdin','-n','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t',frames/30,sound])
             videos.append(out);sounds.append(sound)
             continue
-        check_cancel();path=part['path'];start=part['start'];frames=part['frames'];pi=probe(path);portrait_geometry(pi)
+        check_cancel();path=part['path'];start=part['start'];frames=part['frames'];pi=probe(path);video_geometry(pi)
         if start+frames/30>media_duration(pi,'video')+1/30+1e-6:raise ValueError('视频长度不足，不能循环或定格补齐')
         out=folder/f'clip-{i:04}.mp4';videos.append(out)
         zoom=part.get('zoom',1) if part['role']=='body' else 1
         if type(zoom) not in (int,float) or not math.isfinite(zoom) or not 1<=zoom<=1.05:raise ValueError('放大倍率无效')
-        spatial=f'scale={width}:{height}'
+        spatial=fit_video_filter(width,height)
         if zoom!=1:
             unit=max(width//9,math.floor((width/9)*zoom+1e-6))
-            spatial=f'scale={unit*9}:{unit*16},crop={width}:{height}:(iw-ow)/2:(ih-oh)/2'
+            # YUV420 scaling and padding both need an even intermediate width.
+            zoom_width=(unit*9+1)//2*2
+            spatial=fit_video_filter(zoom_width,unit*16)+f',crop={width}:{height}:(iw-ow)/2:(ih-oh)/2'
         run(['ffmpeg','-v','error','-nostdin','-n','-ss',start,'-i',path,'-map','0:v:0','-an',
              '-vf',f'fps=30,{spatial},setsar=1,setpts=PTS-STARTPTS','-frames:v',frames,
              '-c:v','libx264','-preset','fast','-pix_fmt','yuv420p',out])

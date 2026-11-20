@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from montage import read, save, probe, portrait_geometry, media_duration, fingerprint, number, run
+from montage import read, save, probe, video_geometry, media_duration, fingerprint, number, run
 from asset_index import digest_json
 from workflow import archive
 import hypit_adapter
@@ -82,7 +82,7 @@ def prepare(args):
     root = Path(args.output).resolve()
     source = Path(args.video).resolve()
     info = probe(source)
-    portrait_geometry(info)
+    video_geometry(info)
     task = root / 'task.json'
     if task.exists():
         raise ValueError('任务已存在，请续接现有任务或选择新目录')
@@ -183,7 +183,7 @@ def extract(args):
     if fingerprint(source) != task['source_sha256']:
         raise ValueError('原视频改变，请重新分析')
     source_info = probe(source)
-    portrait_geometry(source_info)
+    video_geometry(source_info)
     actual_duration = media_duration(source_info, 'video')
     if not task.get('analysis', {}).get('reviewed'):
         raise ValueError('需要完成整片内容观察')
@@ -296,7 +296,7 @@ def extract(args):
              '-t', segment['end'] - segment['start'], '-map', '0:v:0', *audio,
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', staged])
         info = probe(staged)
-        portrait_geometry(info)
+        video_geometry(info)
         if not MIN_CLIP_SECONDS - 1e-6 <= media_duration(info, 'video') <= MAX_CLIP_SECONDS + 1e-6 and not single_take_exception(task, segment):
             raise ValueError('实际输出不在默认1–4秒范围且无核实的一镜到底展示例外，停止交付并人工审核')
         if abs(media_duration(info, 'video') - (segment['end'] - segment['start'])) > .15:

@@ -97,6 +97,14 @@ def portrait_geometry(info):
     return geometry
 
 
+def fit_video_filter(width,height):
+    # FFmpeg applies display rotation before filtering. Use DAR to also
+    # account for non-square pixels before setting a square-pixel canvas.
+    return (f"scale=w='max(2,2*round(min({width},{height}*dar)/2))':"
+            f"h='max(2,2*round(min({height},{width}/dar)/2))',setsar=1,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
+
+
 def require_portrait_output(config):
     w, h = config.get('width'), config.get('height')
     if type(w) is not int or type(h) is not int or min(w, h) <= 0 or w * 16 != h * 9:
@@ -454,8 +462,6 @@ def export_draft(args):
             segment = draft.VideoSegment(source, tr,
                          source_timerange=draft.Timerange(round(selection['source_start'] * 1e6), tr.duration),
                          volume=1.0 if config.get('keep_original_audio', False) else 0.0)
-            # Sources already passed the strict 9:16 display check; no crop or
-            # enlargement is used to turn an ineligible source into portrait.
             script.add_segment(segment, 'main_video')
         audio = str(Path(config['audio']).resolve())
         mapping[audio] = copy_media(audio)
@@ -606,7 +612,7 @@ def validate(root):
                     product.get('reuse_scope') == 'product_specific' and product.get('model') == target_model
                 ):
                     raise ValueError('选片产品身份不符合项目型号；请重新检索确认产品身份的素材')
-            portrait_geometry(media)
+            video_geometry(media)
             if not any(s['codec_type'] == 'video' for s in media['streams']):
                 raise ValueError('素材没有视频轨道')
             ss = sel['source_start']
@@ -741,7 +747,7 @@ def render(args):
         for i, shot in enumerate(shots):
             sel = shot['selection']
             dest = Path(tmp) / f'{i:05}.mp4'
-            fit = f'scale={w}:{h}'  # Eligible sources have exact 9:16 display ratio.
+            fit = fit_video_filter(w,h)
             frame_count = round(shot['end'] * fps) - round(shot['start'] * fps)
             if i == len(shots) - 1:
                 frame_count += max(0, math.ceil(config['duration'] * fps) - round(config['duration'] * fps))

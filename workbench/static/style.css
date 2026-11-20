@@ -8,3 +8,6 @@
 .sidebar-restart{margin-top:auto;padding:12px 8px}.sidebar-restart button{font-size:12px;padding:5px 9px}.sidebar-restart+.sidebar-foot{margin-top:0}
 
 [hidden] { display: none !important; }
+
+.request-categories > div { display:flex; flex-wrap:wrap; gap:5px; margin-top:4px; }
+.request-categories button { padding:3px 8px; font-size:12px; }

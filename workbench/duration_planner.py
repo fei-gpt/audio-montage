@@ -103,6 +103,8 @@ def plan_by_duration(candidates, timeline, duration, used=(), max_nodes=20000, a
                 for start in starts:
                     frames=min(remaining,available_frames_at_30fps(r['end']-start))
                     choices.append((start,frames))
+                    if frames<remaining and 0<remaining-frames<min_frames:
+                        choices.append((start,remaining-min_frames))
             for start,frames in set(choices):
                 if not min_frames<=frames<=remaining or 0<remaining-frames<min_frames:continue
                 end=start+frames/30

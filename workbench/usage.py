@@ -9,6 +9,11 @@ LIMIT = 3
 SCHEMA = 'montage-source-usage-v1'
 
 
+def workspace_limit(store,workspace):
+    name=store.get('workspace',workspace)['name'].strip().casefold()
+    return 5 if name in {'hihi','meet','meetokivivi'} else LIMIT
+
+
 def sources(store, task):
     result = {p['asset_sha256'] for p in task.get('plan', {}).get('parts', [])}
     if task.get('intro_sha256'):
@@ -30,9 +35,31 @@ def task_ranges(store, task, *, batch=None):
 
 
 def overlapping_uses(entries, interval):
-    return sum(interval is None or not entry.get('ranges') or any(
-        start<interval[1] and interval[0]<end for start,end in entry['ranges'])
-        for entry in entries)
+    if interval is None:
+        return sum(1 for _ in entries)
+    whole=0
+    changes=defaultdict(int)
+    for entry in entries:
+        if not entry.get('ranges'):
+            whole+=1
+            continue
+        # A prior output contributes at most once on any given source frame.
+        merged=[]
+        for start,end in sorted(entry['ranges']):
+            start,end=max(start,interval[0]),min(end,interval[1])
+            if start>=end:continue
+            if merged and merged[-1][1]>=start:
+                merged[-1][1]=max(end,merged[-1][1])
+            else:merged.append([start,end])
+        for start,end in merged:
+            changes[start]+=1
+            changes[end]-=1
+    count=peak=whole
+    for frame in sorted(changes):
+        count+=changes[frame]
+        peak=max(peak,count)
+    return peak
+
 
 
 def references(record):
@@ -152,15 +179,15 @@ def usage_snapshot(store, task, batch):
         if other.get('dedup_reserved') and other.get('status') in {'running', 'queued'}:
             for sha,ranges in task_ranges(store,other).items():
                 occupied.setdefault(sha,[]).append({'ranges':ranges})
-    return records,occupied
+    return records,occupied,workspace_limit(store,task['workspace_id'])
 
 
 def usage_issue(snapshot, task_id, sha, interval):
-    records,occupied=snapshot
+    records,occupied,limit=snapshot
     if sha in records.errors:return records.errors[sha]
     entries=[e for tid,e in records.events.get(sha,{}).items() if tid!=task_id]
-    if overlapping_uses(entries+occupied.get(sha,[]),interval)>=LIMIT:
-        return '素材区间已达到3次引用上限或剩余次数已被输出任务占用，请更换片段：'+sha[:12]
+    if overlapping_uses(entries+occupied.get(sha,[]),interval)>=limit:
+        return f'素材区间已达到{limit}次引用上限或剩余次数已被输出任务占用，请更换片段：'+sha[:12]
     return ''
 
 
@@ -185,10 +212,12 @@ def sync(store, only_shas=None, *, workspace=None):
         batch = store.get('edit_batch',bid,scope)
         paths.update((c['path'], c['sha256']) for c in batch.get('clips', []))
     records=read_ledger(store,paths,workspace=workspace)
+    folder_workspaces={}
     folders=defaultdict(dict)
     for asset in assets:
         file=Path(asset['path'])
         folders[file.parent][file]=asset['sha256']
+        folder_workspaces[file.parent]=asset['workspace_id']
     written=0
     indexes=0
     errors=[]
@@ -198,6 +227,7 @@ def sync(store, only_shas=None, *, workspace=None):
         if folder not in records.folder_items:
             errors.append({'path':str(folder),'error':records.errors[next(iter(selected.values()))]})
             continue
+        limit=workspace_limit(store,folder_workspaces[folder])
         entries=dict(records.folder_items[folder])
         names=defaultdict(list)
         for file,sha in sorted(files.items()):names[sha].append(file.name)
@@ -208,7 +238,7 @@ def sync(store, only_shas=None, *, workspace=None):
                 entries.pop(sha,None)
                 continue
             item=entries.setdefault(sha,{})
-            item.update({'引用次数':len(refs),'引用上限':LIMIT,'可继续引用':len(refs)<LIMIT,'references':refs})
+            item.update({'引用次数':len(refs),'引用上限':limit,'可继续引用':len(refs)<limit,'references':refs})
             previous_names=set(item.get('文件名',[])+item.get('历史文件名',[]))-set(names.get(sha,[]))
             if previous_names:item['历史文件名']=sorted(previous_names)
             else:item.pop('历史文件名',None)
@@ -229,7 +259,7 @@ def sync(store, only_shas=None, *, workspace=None):
                 if sidecar.exists():
                     item=entries[sha]
                     save(sidecar,{'schema':SCHEMA,'source_sha256':sha,'video_name':file.name,
-                                  '引用次数':item['引用次数'],'引用上限':LIMIT,'可继续引用':item['可继续引用'],
+                                  '引用次数':item['引用次数'],'引用上限':limit,'可继续引用':item['可继续引用'],
                                   '计数说明':'按成功成片计数，同一成片引用本素材只计一次。','references':item['references']})
                 written+=1
             except (OSError,ValueError) as exc:errors.append({'path':str(file),'error':str(exc)})

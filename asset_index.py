@@ -8,7 +8,7 @@ import unicodedata
 import hashlib
 from pathlib import Path
 
-from montage import fingerprint, probe, read, run, save, media_duration, portrait_geometry
+from montage import fingerprint, probe, read, run, save, media_duration, video_geometry
 
 EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v'}
 
@@ -47,7 +47,7 @@ def index_library(args):
         try:
             info = probe(path)
             try:
-                portrait_geometry(info)
+                video_geometry(info)
             except ValueError as exc:
                 stats['excluded'].append({'path': str(path), 'reason': str(exc)})
                 continue
@@ -258,7 +258,7 @@ def search(database, query, minimum=0, required=(), forbidden=(), limit=5, path_
                 if Path(p).is_file() and fingerprint(p) == row['asset_hash']), None)
             if valid_paths[row['asset_hash']]:
                 try:
-                    portrait_geometry(probe(valid_paths[row['asset_hash']]))
+                    video_geometry(probe(valid_paths[row['asset_hash']]))
                 except (ValueError, OSError):
                     valid_paths[row['asset_hash']] = None
         path = valid_paths[row['asset_hash']]
@@ -332,7 +332,7 @@ def choose(args):
     source = Path(candidate['path'])
     if not source.is_file() or fingerprint(source) != clip['asset_hash']:
         raise ValueError('候选素材已移动或修改，请重新检索')
-    portrait_geometry(probe(source))
+    video_geometry(probe(source))
     if shot['end'] - shot['start'] > clip['end'] - clip['start'] + 0.001:
         raise ValueError('镜头时长已改变，候选片段不够长')
     labels = json.loads(clip['labels'])

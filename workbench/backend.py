@@ -159,10 +159,10 @@ class Workbench:
                 for a in self.store.all('asset',w):
                     status=a.get('sword_recognition',{}).get('status')
                     if a.get('user_category') or not a.get('available'):continue
-                    if status=='queued':self.queue_sword(workspace['product_id'],w,a)
                     if status=='running':
-                        a['sword_recognition']=dict(status='unrecognized',reason='工作台重启中断了识别，请人工核对')
+                        a['sword_recognition']={'status':'queued'}
                         self.store.put('asset',w,a)
+                    if status in {'queued','running'}:self.queue_sword(workspace['product_id'],w,a)
 
     def queue_sword(self,p,w,a):
         from workbench.sword_recognition import run
@@ -341,7 +341,10 @@ class Workbench:
         from vision_api import execution_config
         if execution_config.get():return dict(execution_config.get())
         path=self.root/'vision-config.json'
-        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'provider':'codex','base_url':'codex://local','model':'gpt-6-luna','codex_bin':shutil.which('codex') or (str(Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')) if Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex').is_file() else 'codex')}
+        cfg=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'provider':'codex','base_url':'codex://local','model':'gpt-6-luna','codex_bin':shutil.which('codex') or (str(Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')) if Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex').is_file() else 'codex')}
+        if cfg.get('provider')=='codex' and not shutil.which(cfg.get('codex_bin') or 'codex'):
+            cfg['codex_bin']=shutil.which('codex') or cfg.get('codex_bin') or 'codex'
+        return cfg
     def set_config(self,cfg):
         if cfg.get('provider')=='codex':
             model=cfg.get('model','gpt-6-luna')
@@ -599,7 +602,7 @@ class Workbench:
             return self.store.put('asset',w,asset)
 
     def scan(self,p,w):
-        self.workspace(p,w);from montage import probe,portrait_geometry,media_duration
+        self.workspace(p,w);from montage import probe,video_geometry,media_duration
         auto_sword=self.product(p)['name'].strip().casefold() in {'lightplay','toy'}
         found=[];errors=[]
         with self.lock:
@@ -635,7 +638,7 @@ class Workbench:
                         if old and old['sha256']==hash_:
                             a=dict(old,available=True,path=str(path),name=path.name)
                         else:
-                            info=probe(path);portrait_geometry(info)
+                            info=probe(path);video_geometry(info)
                             v=next(x for x in info['streams'] if x['codec_type']=='video')
                             a={'id':old['id'] if old else uid(),'workspace_id':w,'library_id':lib['id'],'path':str(path),'name':path.name,'kind':lib['kind'],'sha256':hash_,'duration':media_duration(info,'video'),'width':v['width'],'height':v['height'],'available':True,'version':(old or {}).get('version',0)+1}
                             if auto_sword and not lib.get('category'):a['sword_recognition']={'status':'queued'}
@@ -811,7 +814,7 @@ class Workbench:
             if j.get('asset_ids'):
                 assets=[a for a in assets if a['id'] in j['asset_ids']]
                 if len(assets)!=len(j['asset_ids']):raise Problem('所选测试素材已失效，请重新选择')
-            if not assets:raise Problem('没有可用的9:16素材：'+json.dumps(scan['errors'],ensure_ascii=False)[:400])
+            if not assets:raise Problem('没有可用的视频素材：'+json.dumps(scan['errors'],ensure_ascii=False)[:400])
             j.setdefault('asset_errors',{})
             from video_document import load_document
             analyzed_sources={(s['asset_id'],s.get('asset_sha256')) for s in self.store.all('shot',w)
@@ -1171,11 +1174,11 @@ class Workbench:
 
     def export_shots(self,w,rows,folder,*,max_duration=None):
         manifest=[]
-        from montage import probe,portrait_geometry,media_duration
+        from montage import probe,video_geometry,media_duration
         for i,s in enumerate(rows):
             src=self.asset_path(w,s['asset_id'],check_hash=False)
             if digest(src)!=s['asset_sha256']:raise Problem('原片版本与已审核镜头不一致，请重新扫描核对',409)
-            info=probe(src);portrait_geometry(info);out=folder/f'{i+1:03}.mp4'
+            info=probe(src);video_geometry(info);out=folder/f'{i+1:03}.mp4'
             frame_data=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_frames','-show_entries','frame=best_effort_timestamp_time','-of','json',str(src)]))
             times=[float(x['best_effort_timestamp_time']) for x in frame_data['frames'] if 'best_effort_timestamp_time' in x]
             if not times:raise Problem('无法读取实际帧边界')
@@ -1190,7 +1193,7 @@ class Workbench:
             cmd=['ffmpeg','-v','error','-nostdin','-y','-i',str(src),'-filter_complex',filters,'-map','[v]']
             if audio:cmd+=['-map','[a]','-c:a','aac']
             subprocess.run(cmd+['-c:v','libx264','-pix_fmt','yuv420p',str(out)],check=True,capture_output=True,timeout=300)
-            checked=probe(out);portrait_geometry(checked);subprocess.run(['ffmpeg','-v','error','-nostdin','-i',str(out),'-f','null','-'],check=True,capture_output=True,timeout=300)
+            checked=probe(out);video_geometry(checked);subprocess.run(['ffmpeg','-v','error','-nostdin','-i',str(out),'-f','null','-'],check=True,capture_output=True,timeout=300)
             if abs(media_duration(checked,'video')-(s['end']-s['start']))>.15:raise Problem('导出时长不符')
             if digest(src)!=s['asset_sha256']:raise Problem('导出期间原片已变化，请重新扫描核对',409)
             from video_document import write_document

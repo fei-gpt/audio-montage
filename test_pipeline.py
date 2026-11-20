@@ -60,7 +60,7 @@ class PipelineTest(unittest.TestCase):
             m.check_segments([{'start': 0, 'end': 2, 'text': 'a'},
                               {'start': 1, 'end': 3, 'text': 'b'}], 4)
 
-    def test_only_9_16_sources_at_every_boundary(self):
+    def test_varied_sources_render_to_portrait(self):
         landscape = self.library / 'landscape.mp4'
         square = self.library / 'square.mp4'
         for path, size in [(landscape, '320x180'), (square, '320x320')]:
@@ -79,34 +79,10 @@ class PipelineTest(unittest.TestCase):
         db = self.root / 'portrait.sqlite'
         ix.index_library(Namespace(library=self.library, database=db, window=2, scene=0.3))
         stats = m.read(db.with_suffix('.index-report.json'))
-        self.assertEqual(len(stats['excluded']), 2)
-        self.assertEqual(stats['indexed_files'], 2)
-        # Simulate a pre-policy database: retrieval must recheck old entries.
-        digest = m.fingerprint(landscape)
-        labels = {'description': 'legacy landscape scene', 'tags': []}
-        with contextlib.closing(ix.connect(db)) as conn, conn:
-            conn.execute('INSERT INTO assets(hash,paths,duration,settings) VALUES(?,?,?,?)',
-                         (digest, json.dumps([str(landscape)]), 4, '{}'))
-            conn.execute('INSERT INTO clips VALUES(?,?,?,?,?,?,?)',
-                         ('legacy', digest, 0, 4, '[]', json.dumps(labels), 1))
-        self.assertEqual(ix.search(db, 'legacy landscape'), [])
+        self.assertEqual(stats['excluded'], [])
+        self.assertEqual(stats['indexed_files'], 4)
         data = self.select()
         data['shots'][0]['selection']['path'] = str(landscape)
-        m.save(self.project / 'plans/edit.json', data)
-        self.assertTrue(any('9:16' in e for e in m.validate(self.project)[3]['errors']))
-        with self.assertRaises(ValueError):
-            m.render(Namespace(project=self.project, final=False))
-        if importlib.util.find_spec('pyJianYingDraft'):
-            with self.assertRaises(ValueError):
-                m.export_draft(Namespace(project=self.project, name='bad-draft', allow_unreviewed=True))
-        # Even a manually retained old candidate cannot bypass choose.
-        shot = data['shots'][0]
-        m.save(self.project / 'plans/candidates.json', {'shots': [{'shot_id': shot['id'],
-            'request_sha256': ix.request_signature(shot), 'candidates': [{'clip_id': 'legacy',
-            'rights': {'usage': 'allowed', 'source': 'synthetic test fixture'}, 'path': str(landscape), 'labels_sha256': ix.digest_json(labels)}]}]})
-        with self.assertRaises(ValueError):
-            ix.choose(Namespace(project=self.project, database=db, shot=shot['id'], clip='legacy'))
-        data['shots'][0]['selection']['path'] = str(rotated)
         m.save(self.project / 'plans/edit.json', data)
         m.render(Namespace(project=self.project, final=False))
         self.assertEqual(m.portrait_geometry(m.probe(self.project / 'out/preview.mp4'))['display_ratio'], '9:16')

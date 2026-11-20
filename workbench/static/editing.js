@@ -130,6 +130,7 @@ async function editUploadFile(file,kind,workspace){
   const response=await fetch(`${workspace}/editing/uploads`,{method:'POST',headers:{'X-Workbench-Token':window.WORKBENCH_TOKEN,'X-File-Name':encodeURIComponent(file.name),'X-Upload-Kind':kind,'Content-Type':'application/octet-stream'},body:file});
   const result=await response.json();if(!response.ok)throw Error(result.error||'上传失败');return result;
 }
+function categoryButtonsHTML(labels){return labels.map(label=>`<button type="button" data-insert-category="${esc(label)}">${esc(label)}</button>`).join('')}
 function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   const w=W();
   const workspace=wb(),uploaded=new Map();
@@ -159,7 +160,9 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   <div id="editNarrationUpload" class="refbox" style="margin-top:16px"><label class="field"><span id="editNarrationLabel">上传配音</span><input id="editNarration" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac" required><small id="editNarrationDuration" aria-live="polite"></small></label><p class="small muted" id="editAudioHint">画面使用当前账号素材库。</p></div>
   <div id="editBackgroundMusic" class="refbox" style="margin-top:12px"><label class="field"><span id="editMusicLabel">本批背景音乐（可选）</span><select name="history_music_id" aria-label="音乐历史"><option value="">从历史选择音乐</option>${(w.background_music_history||[]).map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${m.duration.toFixed(2)} 秒</option>`).join('')}</select><input id="editMusic" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac"><small id="editMusicDuration" aria-live="polite"></small></label><label id="editMusicVolume" class="field"><span>音乐音量（%）</span><input type="number" name="music_volume" min="0" max="100" value="15"></label><p id="editBatchMusicSummary" class="small muted" aria-live="polite"></p><p id="editBackgroundHint" class="small muted">音乐从每条视频的配音段开头播放，按各自时长裁切，播完后不循环。</p></div>
   ${referenceMode?`<label class="field"><span>参考视频（任意画幅，最多 120 秒）</span><input id="editReference" type="file" accept=".mp4,.mov,.mkv,.webm" required></label><p class="small muted">按参考片的主体、动作和节奏匹配素材库镜头。可只传参考片做无配音预览。</p>`:''}<div id="editScripts"><label class="field"><span>整段配音文案（可选）</span><textarea name="script_0" placeholder="粘贴与配音对应的整段文案，无需提供字幕文件"></textarea></label></div>
-  <label class="field"><span>使用哪一种素材识别结果？</span><select name="analysis_mode"><option value="simple" ${P().analysis_mode==='simple'?'selected':''}>简单展示结果</option><option value="standard" ${P().analysis_mode!=='simple'?'selected':''}>明确标准结果（含旧版记录）</option></select></label><label class="field"><span>剪辑匹配方式</span><select name="matching_mode"><option value="duration">时长匹配 · 按断句长度选素材（不调用模型）</option>${P()?.sentence_editing_only?'':`<option value="semantic">语义匹配 · 按文案意思选画面（调用模型）</option>`}</select></label><label class="field" id="editSemanticRequest"><span>本批通用剪辑要求（可选）</span><textarea name="request" placeholder="第一镜必须用四把光剑旋转&#10;最后一镜优先用带货指引"></textarea><small>按时长选片时，用素材类别名称指定第几镜、最后一镜或时间码。多条要求用换行或分号分隔。<br><strong>必须</strong>：第一镜必须用四把光剑旋转，只接受这个标签。最后一镜必须用四把光剑旋转+旋转到停下，先找恰好带这两个标签的素材。素材不足时，可用只带其中一个标签的素材补上。<br><strong>优先</strong>：最后一镜优先用带货指引。找不到合适镜头时可以换别的类别。<br><strong>排除</strong>：第三镜必须用单把光剑旋转，排除静止到旋转。</small></label>
+  <label class="field"><span>使用哪一种素材识别结果？</span><select name="analysis_mode"><option value="simple" ${P().analysis_mode==='simple'?'selected':''}>简单展示结果</option><option value="standard" ${P().analysis_mode!=='simple'?'selected':''}>明确标准结果（含旧版记录）</option></select></label><label class="field"><span>剪辑匹配方式</span><select name="matching_mode"><option value="duration">时长匹配 · 按断句长度选素材（不调用模型）</option>${P()?.sentence_editing_only?'':`<option value="semantic">语义匹配 · 按文案意思选画面（调用模型）</option>`}</select></label><div class="field" id="editSemanticRequest"><label for="editCommonRequest">本批通用剪辑要求（可选）</label><textarea id="editCommonRequest" name="request" placeholder="第一镜必须用四把光剑旋转&#10;最后一镜优先用带货指引"></textarea>
+    ${P().shot_categories?.length?`<div class="request-categories" role="group" aria-label="展示类别"><small>展示类别（点击插入，多类用 + 连接）</small><div>${categoryButtonsHTML(P().shot_categories)}</div></div>`:''}
+    <small>按时长选片时，用素材类别名称指定第几镜、最后一镜或时间码。多条要求用换行或分号分隔。<br><strong>必须</strong>：第一镜必须用四把光剑旋转，只接受这个标签。最后一镜必须用四把光剑旋转+旋转到停下，先找恰好带这两个标签的素材。素材不足时，可用只带其中一个标签的素材补上。<br><strong>优先</strong>：最后一镜优先用带货指引。找不到合适镜头时可以换别的类别。<br><strong>排除</strong>：第三镜必须用单把光剑旋转，排除静止到旋转。</small></div>
   ${referenceMode?'':'<label class="field" id="editTargetDuration"><span>成片时长</span><select name="length_mode"><option value="voice">跟随配音</option><option value="music">跟随背景音乐</option><option value="custom">自定义秒数</option></select><input name="target_duration" aria-label="自定义成片秒数" placeholder="自定义秒数" type="number" min="0.1" max="600" step="0.001"></label>'}
   <label class="field" id="editVariantField"><span>候选数量</span><select name="variant_count"><option value="1">1 条</option><option value="5">5 条</option><option value="10">10 条</option><option value="15">15 条</option></select><small>多条候选沿用同一要求，先生成预览供你选择。只统计正式导出的素材引用。</small></label>
   <label class="field"><span>输出方式</span><select name="mode"><option value="preview">先预览再确认成片</option><option value="direct">直接输出（未人工审片）</option></select></label>
@@ -293,6 +296,22 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   if(lengthMode)lengthMode.onchange=()=>{clearInspections();updateExecution()};
   if(seconds)seconds.oninput=clearInspections;
   commonRequest.oninput=clearInspections;
+  const bindCategoryButtons=()=>form.querySelectorAll('[data-insert-category]').forEach(button=>button.onclick=()=>{
+    const start=commonRequest.selectionStart;
+    const prefix=commonRequest.value.slice(0,start);
+    const join=P().shot_categories.some(label=>prefix.endsWith(label))?'+':'';
+    commonRequest.setRangeText(join+button.dataset.insertCategory,start,commonRequest.selectionEnd,'end');
+    commonRequest.focus();
+    commonRequest.dispatchEvent(new Event('input',{bubbles:true}));
+  });
+  bindCategoryButtons();
+  form.updateCategoryButtons=labels=>{
+    const list=form.querySelector('.request-categories > div');
+    if(!list)return;
+    list.innerHTML=categoryButtonsHTML(labels);
+    bindCategoryButtons();
+    clearInspections();
+  };
   function audioSettings(){
     clearInspections();
     const music=audioKind?.value==='music';
@@ -550,7 +569,7 @@ function editTaskDialog(id){
   ${!busy&&!off&&(t.plan||t.status==='needs_attention')?'<div id="editPreviewCheck" aria-live="polite"></div>':''}
   ${b.reference?'<button id="inspectReference">查看逐镜诊断与纠错</button>':''}
   ${referenceMatchPanel(b,t,busy||off)}
-  ${t.reference_analysis?`<details><summary>参考视频结构（采样初审，非精确切点）</summary>${t.reference_analysis.beats.map(x=>`<p>${x.start}–${x.end}秒 · ${esc(x.purpose)} · ${esc(x.action)} · ${esc(x.composition)}</p>${x.must_see?`<p>必须看见 · ${esc(x.must_see.join('；'))}</p>${x.flexible?.length?`<p>允许变化 · ${esc(x.flexible.join('；'))}</p>`:''}`:''}`).join('')}</details>`:''}${t.plan?`<details><summary>剪辑清单（${t.plan.parts.length}段）</summary>${t.plan.parts.map(p=>`<p class="small">${p.timeline_start.toFixed(2)}–${p.timeline_end.toFixed(2)} · ${esc(p.reason)}</p>`).join('')}<label class="field"><span>修正清单 JSON（只能使用已确认镜头与安全区间）</span><textarea id="editPlanJson" style="min-height:180px">${esc(JSON.stringify(t.plan,null,2))}</textarea></label><button id="editSavePlan" ${busy||off?'disabled':''}>保存修改并重新预览</button></details>`:''}
+  ${t.reference_analysis?`<details><summary>参考视频结构（采样初审，非精确切点）</summary>${t.reference_analysis.beats.map(x=>`<p>${x.start}–${x.end}秒 · ${esc(x.purpose)} · ${esc(x.action)} · ${esc(x.composition)}</p>${x.must_see?`<p>必须看见 · ${esc(x.must_see.join('；'))}</p>${x.flexible?.length?`<p>允许变化 · ${esc(x.flexible.join('；'))}</p>`:''}`:''}`).join('')}</details>`:''}${t.plan?`<details><summary>剪辑清单（${t.plan.parts.length}段）</summary>${t.plan.parts.map(p=>`<p class="small">${p.timeline_start.toFixed(2)}–${p.timeline_end.toFixed(2)} 秒 · <strong>${esc(p.source_name||W()?.assets?.find(a=>a.id===(p.asset_id||p.shot_id))?.name||'源文件名未记录')}</strong> · ${esc(p.reason)}</p>`).join('')}<label class="field"><span>修正清单 JSON（只能使用已确认镜头与安全区间）</span><textarea id="editPlanJson" style="min-height:180px">${esc(JSON.stringify(t.plan,null,2))}</textarea></label><button id="editSavePlan" ${busy||off?'disabled':''}>保存修改并重新预览</button></details>`:''}
   ${off?'':`<div class="inline" style="margin-top:16px">${t.source_warning?'':ready?'<button data-edit-op="plan">规划选片</button>':canContinue?'<button data-edit-op="resume">继续任务</button>':''}<button data-edit-op="preview" ${!t.plan||busy||t.source_warning?'disabled':''}>生成预览</button><button data-edit-op="pause" ${busy||ready?'':'disabled'}>暂停</button><button data-edit-op="cancel">取消</button></div>`}
   ${t.plan&&!off?`<div style="margin-top:16px">${t.source_warning&&!busy?'<button id="editReselect">沿用要求，重新选片</button>':b.rules.mode==='preview'?'<p class="small muted">请先播放预览，核对内容、动作完整性、配音时间轴和音画衔接。</p>':''}<button class="primary" id="editFinal" ${busy||t.source_warning||t.plan.reference_gaps?.length||b.rules.mode==='preview'&&!t.preview?'disabled':''}>${b.rules.mode==='direct'?'直接输出（未人工审片）':'已核对，确认输出'}</button></div>`:''}</div>`);
   document.querySelectorAll('[data-edit-op]').forEach(button=>button.onclick=()=>editOperation(button.dataset.editOp,id));

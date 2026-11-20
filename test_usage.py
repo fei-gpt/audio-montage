@@ -16,6 +16,27 @@ class UsageTest(unittest.TestCase):
     task=fixtures.EditingTest.task
     proposal=fixtures.EditingTest.proposal
 
+    def test_fifth_use_only_for_hihi_and_meet(self):
+        from workbench.usage import usage_snapshot,usage_issue
+        b,t=history(self,4)
+        for name in ('hihi','meetokivivi','toy','lightplay'):
+            self.app.store.put('workspace',self.p['id'],dict(self.w,name=name))
+            snapshot=usage_snapshot(self.app.store,t,b)
+            sha=self.asset['sha256']
+            if name in ('toy','lightplay'):
+                self.assertIn('3次',usage_issue(snapshot,t['id'],sha,[0,30]))
+            else:
+                self.assertFalse(usage_issue(snapshot,t['id'],sha,[0,30]))
+                snapshot[1][sha]=[{'ranges':[[0,30]]}]
+                self.assertIn('5次',usage_issue(snapshot,t['id'],sha,[0,30]))
+
+    def test_limit_counts_outputs_on_the_same_source_frame(self):
+        from workbench.usage import overlapping_uses
+        entries=[{'ranges':[[0,15],[5,20]]},{'ranges':[[20,40]]},{'ranges':[[10,30]]}]
+        self.assertEqual(overlapping_uses(entries,[0,40]),2)
+        self.assertEqual(overlapping_uses(entries+[{'ranges':None}],[0,40]),3)
+        self.assertEqual(overlapping_uses(entries,[40,50]),0)
+
     def test_replacement_keeps_portable_history_under_original_hash(self):
         from montage import save
         from workbench.usage import SCHEMA

@@ -10,6 +10,13 @@ class DurationPlanTest(unittest.TestCase):
   with self.assertRaises(ValueError):plan_by_duration([self.c('a',60)],{'segments':[{'end':1}]},1)
  def test_safe_trim(self):
   r=plan_by_duration([self.c('a',60,[{'start':0,'end':2}])],{'segments':[{'end':1}]},1);self.assertEqual(r['parts'][0]['frames'],30)
+ def test_trim_reserves_library_minimum_for_next_source(self):
+  candidates=[self.c(key,60,[{'start':0,'end':2}]) for key in ('a','b')]
+  result=plan_by_duration(candidates,{'segments':[{'end':86/30}]},86/30,
+                          min_frames=43,free_selection=True,seed=1)
+  self.assertEqual([part['frames'] for part in result['parts']],[43,43])
+  self.assertEqual({part['shot_id'] for part in result['parts']},{'a','b'})
+
  def test_used_excluded(self):
   with self.assertRaises(ValueError):plan_by_duration([self.c('a')],{'segments':[{'end':1}]},1,[{'asset_sha256':'a','start':0,'end':1}])
 if __name__=='__main__':unittest.main()

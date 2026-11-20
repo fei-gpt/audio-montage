@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import asset_index as ix
-from montage import read, save, fingerprint, probe, portrait_geometry, media_duration, number, run
+from montage import read, save, fingerprint, probe, video_geometry, media_duration, number, run
 
 
 def template(asset):
@@ -66,7 +66,7 @@ def source(asset):
     if not path:
         raise ValueError('原素材缺失或内容已改变')
     info = probe(path)
-    portrait_geometry(info)
+    video_geometry(info)
     return path, media_duration(info, 'video')
 
 

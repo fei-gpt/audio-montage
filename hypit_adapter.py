@@ -34,15 +34,24 @@ def _hypit_command(value):
 
 
 def _run(command, cwd=None, *, timeout=None):
-    # Windows resolves .CMD/.BAT launchers through cmd.exe when typed in a
-    # shell, but subprocess.run(list) does not perform that shell lookup.
-    # Keep shell execution disabled and invoke the launcher explicitly.
-    if os.name == 'nt' and command and Path(command[0]).suffix.lower() in {'.cmd', '.bat'}:
-        command = [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', *command]
+    flags=0
+    if os.name=='nt':
+        flags=subprocess.CREATE_NO_WINDOW
+        launcher=Path(command[0])
+        if launcher.suffix.lower() in {'.cmd','.bat'}:
+            bundled=Path(__file__).resolve().parent/'.hypit-runtime'/'node_modules'
+            entry=bundled/'@hypit'/'hypit'/'bin'/'hypit.mjs'
+            if launcher.resolve()==bundled/'.bin'/'hypit.cmd' and entry.is_file():
+                local_node=launcher.parent/'node.exe'
+                node=str(local_node) if local_node.is_file() else shutil.which('node')
+                if not node:raise ValueError('找不到运行 Hypit 的 Node.js')
+                command=[node,str(entry),*command[1:]]
+            else:
+                command=[os.environ.get('COMSPEC','cmd.exe'),'/d','/c',*command]
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
-                            encoding='utf-8', errors='replace', timeout=timeout)
+                            encoding='utf-8', errors='replace', timeout=timeout,creationflags=flags)
     if result.returncode:
-        detail = (result.stderr or result.stdout)[-4000:]
+        detail = (result.stderr or result.stdout).strip()[-4000:] or f'进程退出码 0x{result.returncode & 0xffffffff:08X}'
         raise ValueError(f'Hypit 命令失败：{detail}')
     return result.stdout or ''
 

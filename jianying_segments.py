@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from montage import read, save, fingerprint, probe, portrait_geometry, media_duration
+from montage import read, save, fingerprint, probe, video_geometry, media_duration
 
 
 def invoke(tool, jy_dir, arguments, log):
@@ -119,7 +119,7 @@ def execute(args):
             if args.export:
                 invoke(tool, jy_dir, ['-ex', str(folder), '-o', str(video)], output / (name + '.log'))
                 info = probe(video)
-                portrait_geometry(info)
+                video_geometry(info)
                 if abs(media_duration(info, 'video') - segment['target_timerange']['duration'] / 1e6) > .15:
                     raise ValueError(f'{name}: 引擎输出时长不符')
                 row.update(status='exported', output_sha256=fingerprint(video))

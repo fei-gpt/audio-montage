@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from workbench.duration_planner import available_frames_at_30fps
 from types import SimpleNamespace
-from montage import probe, video_geometry, portrait_geometry, media_duration, fingerprint, read, save, timing, check_segments
+from montage import probe, video_geometry, media_duration, fingerprint, read, save, timing, check_segments
 from video_document import load_document
 from workbench.backend import Problem, uid, now
 
@@ -274,8 +274,7 @@ class Editing:
                     if not chunk:raise Problem('上传未完成，请重新选择文件')
                     out.write(chunk);remaining-=len(chunk)
             info=probe(target)
-            if kind=='clip':portrait_geometry(info)
-            elif kind=='reference':video_geometry(info)
+            if kind in {'clip','reference'}:video_geometry(info)
             duration=media_duration(info,'video' if kind in {'clip','reference'} else 'audio')
             if duration<=0:raise Problem('媒体没有有效时长')
             return self.store.put('edit_upload',w,{'id':ident,'kind':kind,'name':Path(name).name[:200],
@@ -462,7 +461,7 @@ class Editing:
             task={'id':uid(),'batch_id':bid,'product_id':p,'workspace_id':w,'name':key,'status':'ready','stage':'等待规划','created_at':now()}
             try:
                 if any(len(files.get(ext,[]))!=1 for ext in ('.mp4','.mp3')):raise ValueError('缺少同名 MP4/MP3 或存在重名文件，不自动配对')
-                video,audio=files['.mp4'][0],files['.mp3'][0];vi=probe(video);portrait_geometry(vi);ai=probe(audio)
+                video,audio=files['.mp4'][0],files['.mp3'][0];vi=probe(video);video_geometry(vi);ai=probe(audio)
                 task.update(intro=str(video),audio=str(audio),intro_sha256=fingerprint(video),audio_sha256=fingerprint(audio),
                             intro_duration=media_duration(vi,'video'),audio_duration=media_duration(ai,'audio'))
             except Exception as exc:task.update(status='invalid',stage='输入无效',error=str(exc)[:1000])
@@ -481,7 +480,7 @@ class Editing:
             for u in inputs:
                 file=Path(u['path']).resolve()
                 if not file.is_relative_to(root) or not file.is_file() or fingerprint(file)!=u['sha256']:raise ValueError('上传文件已变化或不可用，请重新上传')
-            for c in b.get('clips',[]):portrait_geometry(probe(c['path']))
+            for c in b.get('clips',[]):video_geometry(probe(c['path']))
             if b['rules'].get('reference_matching')==2 and b.get('clips'):
                 from workbench.reference import screen_sources
                 fixed=[dict(c,asset_sha256=c['sha256'],start=0,end=c['duration']) for c in b['clips']]
@@ -492,7 +491,7 @@ class Editing:
         for field in ('intro','audio'):
             f=Path(t[field]).resolve()
             if f.parent!=root or not f.is_file() or fingerprint(f)!=t[field+'_sha256']:raise ValueError('输入文件已移动、删除或改变，请创建新批次')
-        portrait_geometry(probe(t['intro']))
+        video_geometry(probe(t['intro']))
 
     def timeline(self,b,t):
         if b['rules'].get('reference_only'):
@@ -539,7 +538,8 @@ class Editing:
         data['audio_sha256']=t['audio_sha256'];save(dest,data);return data
 
     def candidates(self,p,w,analysis_mode=None,use_prepared_files=False,*,reference_clock=False,active_versions=False,allow_prepared_trim=False,shot_ids=None,usage=None,visible=None,browsing=False):
-        from workbench.usage import read_ledger, LIMIT
+        from workbench.usage import read_ledger, workspace_limit
+        limit=workspace_limit(self.store,w)
         if usage is None:usage=read_ledger(self.store,workspace=w)
         counts=usage.events
         blocked=set()
@@ -567,14 +567,14 @@ class Editing:
                     blocked.add(a['sha256'])
                     continue
                 uses=sum(not entry.get('ranges') for entry in counts.get(a['sha256'],{}).values())
-                if a.get('kind')!='prepared' or uses>=LIMIT:continue
+                if a.get('kind')!='prepared' or uses>=limit:continue
                 try:
                     if file_hash(Path(a['path']))!=a['sha256']:continue
                 except OSError:continue
                 end=a['duration'];frames=available_frames_at_30fps(end)
                 if frames<1:continue
                 result.append(dict(id=a['id'],asset_id=a['id'],asset_sha256=a['sha256'],name=a['name'],
-                                   start=0,end=end,frames=frames,usage_count=uses,usage_limit=LIMIT,
+                                   start=0,end=end,frames=frames,usage_count=uses,usage_limit=limit,
                                    confirmed_categories=confirmed_categories(a),
                                    safe_trim_ranges=[dict(start=0,end=end)],action_start=None,action_end=None))
         for s in shots:
@@ -582,7 +582,7 @@ class Editing:
             if analysis_mode and s.get('analysis_mode','standard')!=analysis_mode:continue
             a=assets.get(s['asset_id'])
             if use_prepared_files and a and a.get('kind')=='prepared':continue
-            if a and sum(not entry.get('ranges') for entry in counts.get(a['sha256'],{}).values())>=LIMIT:continue
+            if a and sum(not entry.get('ranges') for entry in counts.get(a['sha256'],{}).values())>=limit:continue
             if not a or s.get('stale') or s.get('review_decision')!='keep' or not s.get('human_confirmed'):continue
             if a['sha256']!=s.get('asset_sha256'):continue
             if a['sha256'] in usage.errors:
@@ -612,7 +612,7 @@ class Editing:
                 ranges=[{'start':s['start'],'end':s['end']}]
             result.append({'id':s['id'],'asset_id':a['id'],'asset_sha256':a['sha256'],'name':a['name'],
                            'start':s['start'],'end':s['end'],'frames':available_frames_at_30fps(s['end']-s['start']),
-                           'usage_count':sum(not entry.get('ranges') for entry in counts.get(a['sha256'],{}).values()),'usage_limit':LIMIT,
+                           'usage_count':sum(not entry.get('ranges') for entry in counts.get(a['sha256'],{}).values()),'usage_limit':limit,
                            'safe_trim_ranges':ranges,'facts':s.get('facts',''),'visual_details':s.get('visual_details') or ({} if s.get('temporal_observation') else doc.get('context',{}).get('visual_details',{})),
                            'action_start':s.get('action_start'),'action_end':s.get('action_end'),
                            'confirmed_categories':confirmed_categories(a)})
@@ -981,10 +981,11 @@ class Editing:
                 self.check_stop(t)
                 self.store.put('edit_task',t['workspace_id'],t)
             if not candidates:raise ValueError('排除同源、疑似重复或不可核对的区间后，没有可用的已确认镜头')
+        from workbench.usage import workspace_limit
+        limit=workspace_limit(self.store,t['workspace_id'])
         if batch_counts is not None:
-            from workbench.usage import LIMIT
-            candidates=[c for c in candidates if c['usage_count']+batch_counts[c['asset_sha256']]<LIMIT]
-        if not candidates:raise ValueError('当前账号没有可用的已确认素材（需完整分析JSON且引用不足3次），请补充或审核其他素材')
+            candidates=[c for c in candidates if c['usage_count']+batch_counts[c['asset_sha256']]<limit]
+        if not candidates:raise ValueError(f'当前账号没有可用的已确认素材（需完整分析JSON且引用不足{limit}次），请补充或审核其他素材')
         random.Random(t['selection_seed']).shuffle(candidates)
         history=self.history(t)
         peer_counts=Counter()
@@ -1021,10 +1022,43 @@ class Editing:
             parent_sources={part['asset_sha256'] for part in parent['plan']['parts']} if parent else set()
             from product_display import LIGHT_SWORD_ROTATIONS
             single_ids={c['id'] for c in candidates if contains_category(c,LIGHT_SWORD_ROTATIONS['single'])}
-            from workbench.usage import LIMIT,overlapping_uses
+            from workbench.usage import overlapping_uses
+            # An interval can become eligible exactly where a previous use ends.
+            # Expose those boundaries to the planner instead of sampling past them.
+            for c in candidates:
+                entries=list(usage.events.get(c['asset_sha256'],{}).values())
+                if len(entries)<limit:continue
+                windows=[]
+                for span in c.get('safe_trim_ranges',[]):
+                    lo=math.ceil(span['start']*30-1e-7)
+                    hi=math.floor(span['end']*30+1e-7)
+                    starts={lo}
+                    for entry in entries:
+                        starts.update(end for _,end in entry.get('ranges') or [] if lo<end<hi)
+                    for start in sorted(starts):
+                        left,right=start,hi
+                        while left<right:
+                            mid=(left+right+1)//2
+                            if overlapping_uses(entries,[start,mid])<limit:left=mid
+                            else:right=mid-1
+                        if left-start>=minimum and (not windows or windows[-1]['end']<left/30 or windows[-1]['start']>start/30):
+                            windows.append(dict(start=start/30,end=left/30))
+                c['safe_trim_ranges']=windows
+            if b['rules'].get('use_prepared_files') and self.distinct_batch_sources(b):
+                capacities={}
+                for c in candidates:
+                    entries=usage.events.get(c['asset_sha256'],{}).values()
+                    start=round(c['start']*30)
+                    whole=c['frames'] if overlapping_uses(entries,[start,start+c['frames']])<limit else 0
+                    frames=max([whole]+[available_frames_at_30fps(r['end']-r['start']) for r in c['safe_trim_ranges']])
+                    if frames>=minimum:
+                        key=source_group(c)
+                        capacities[key]=max(capacities.get(key,0),frames)
+                if sum(capacities.values())<total-music_tail_allowance(b,t):
+                    raise ValueError(f'按同批源素材去重、引用上限和镜头最低时长筛选后，剩余 {len(capacities)} 个可用来源，最多覆盖 {sum(capacities.values())/30:.2f} 秒，本条需要 {total/30:.2f} 秒')
             def request_rank(part,ordinal,frame,last,parts):
                 start=round(part['start']*30)
-                if overlapping_uses(usage.events.get(part['asset_sha256'],{}).values(),[start,start+part['frames']])>=LIMIT:
+                if overlapping_uses(usage.events.get(part['asset_sha256'],{}).values(),[start,start+part['frames']])>=limit:
                     return None
                 if self.distinct_batch_sources(b) and any(
                         source_group(by_id[prior['shot_id']])==source_group(by_id[part['shot_id']]) for prior in parts):
@@ -1728,7 +1762,8 @@ class Editing:
             return {'queued':self.dispatch(b,selected,action,body.get('allow_paid') is True,attempt)}
 
     def prepare_duration_batch(self,b,w,ids,attempt):
-        from workbench.usage import LIMIT,read_ledger,sources
+        from workbench.usage import workspace_limit,read_ledger,sources
+        limit=workspace_limit(self.store,w)
         pending=[]
         counts=Counter()
         for task in self.tasks(w,b['id']):
@@ -1757,8 +1792,8 @@ class Editing:
                 self.check_stop(task)
                 fixed_sources=sources(self.store,task)
                 historical.require(fixed_sources)
-                if any(len(historical.events.get(sha,{}))+counts[sha]>=LIMIT for sha in fixed_sources):
-                    raise ValueError('固定开头或结尾已达到3次引用上限，含本批已分配次数')
+                if any(len(historical.events.get(sha,{}))+counts[sha]>=limit for sha in fixed_sources):
+                    raise ValueError(f'固定开头或结尾已达到{limit}次引用上限，含本批已分配次数')
                 self.plan(b,task,False,prepared_timeline=timeline,batch_counts=counts)
                 with self.app.lock:
                     self.check_stop(task)

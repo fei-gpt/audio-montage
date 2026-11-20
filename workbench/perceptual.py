@@ -3,7 +3,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from montage import fingerprint, probe, portrait_geometry, media_duration, save
+from montage import fingerprint, probe, video_geometry, media_duration, save
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.dedup-runtime'))
@@ -20,7 +20,7 @@ def signature(path, cache):
         if value.get('version') == VERSION:
             return value
     info = probe(path)
-    portrait_geometry(info)
+    video_geometry(info)
     duration = media_duration(info, 'video')
     command = ['ffmpeg', '-v', 'error', '-nostdin', '-i', str(path), '-an', '-vf',
                'fps=2,scale=64:64', '-frames:v', '120', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']

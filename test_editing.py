@@ -595,8 +595,7 @@ class EditingTest(unittest.TestCase):
                 ref=self.upload(video,'reference')
                 batch=self.app.editing.create_uploaded(self.p['id'],self.w['id'],{'reference_id':ref['id']})
                 self.app.editing.check_inputs(batch,self.task(batch))
-                with self.assertRaisesRegex(ValueError,'仅允许 9:16'):
-                    self.upload(video,'clip')
+                self.assertEqual(self.upload(video,'clip')['kind'],'clip')
 
     def test_reference_can_repeat_display_with_or_without_narration(self):
         edit=self.app.editing
@@ -1052,6 +1051,13 @@ class EditingTest(unittest.TestCase):
         self.assertTrue(match['same_ending_source'])
         self.assertFalse(match['same_ending'])
         self.assertEqual(match['body_overlap'],0)
+
+    def test_preview_zoom_with_odd_intermediate_width(self):
+        from workbench.edit_media import render
+        _,report=render(None,self.audio,[dict(path=self.clip,start=0,frames=60,zoom=1.025)],
+                        self.root/'zoom-preview',preview=True)
+        self.assertEqual((report['width'],report['height'],report['duration']),(360,640,2))
+        self.assertTrue(report['decode_checked'])
 
     def test_zoom_preview_and_output_preserve_portrait_and_duration(self):
         b=self.create();proposal=self.proposal();proposal['parts'][0]['zoom']=1.05
