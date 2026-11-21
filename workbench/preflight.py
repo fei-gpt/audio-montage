@@ -1,5 +1,6 @@
 """Read-only, offline handoff checks. Never starts jobs or calls a model."""
 import argparse
+from runtime_environment import resolve_codex
 from contextlib import closing
 import importlib.util
 import json
@@ -32,7 +33,7 @@ def inspect(data):
             raise ValueError('配置必须为对象')
         add('识别配置', cfg.get('provider', 'codex') == 'codex' and
             cfg.get('model', 'gpt-6-luna') == 'gpt-6-luna', '固定 Codex / gpt-6-luna')
-        add('Codex CLI', shutil.which(cfg.get('codex_bin') or 'codex'),
+        add('Codex CLI', resolve_codex(cfg.get('codex_bin')),
             '新电脑需安装CLI、重新保存识别设置并使用自己的ChatGPT登录；模型权限尚未联网验证')
     except (OSError, ValueError, TypeError) as exc:
         add('识别配置', False, type(exc).__name__ + '：请在识别设置中重新保存')

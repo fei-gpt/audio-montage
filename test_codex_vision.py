@@ -1,4 +1,4 @@
-import json,tempfile,unittest
+import json,os,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -7,6 +7,17 @@ from vision_api import execution_config
 
 
 class CodexVisionTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows desktop CLI layout')
+    def test_stale_cli_path_after_desktop_update(self):
+        from runtime_environment import resolve_codex
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'OpenAI' / 'Codex' / 'bin'
+            installed = root / 'new' / 'codex.exe'
+            installed.parent.mkdir(parents=True)
+            installed.touch()
+            with patch.dict(os.environ, {'LOCALAPPDATA': tmp, 'PATH': tmp}):
+                self.assertEqual(resolve_codex(str(root / 'old' / 'codex.exe')), str(installed))
+
     def test_explicit_model_images_and_cache_without_http(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);image=root/'frame.jpg';image.write_bytes(b'fixture')

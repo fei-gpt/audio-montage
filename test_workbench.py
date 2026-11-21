@@ -150,6 +150,23 @@ class WorkbenchTest(unittest.TestCase):
         self.assertLessEqual(clip['duration'],4)
         self.assertAlmostEqual(clip['duration'],row['end']-row['start'],delta=.04)
 
+    def test_plain_toy_does_not_trigger_sword_recognition(self):
+        self.app.update_product(self.p['id'],dict(name='toy'))
+        with patch.object(self.app,'queue_sword') as queue:
+            asset=self.attach()
+            queue.assert_not_called()
+        self.assertNotIn('sword_recognition',asset)
+
+    def test_shared_sword_library_recovers_unclassified_assets_once(self):
+        old=self.attach()
+        owner=self.app.create_product('lightplay')
+        p=self.p['id'];w=self.w['id']
+        self.app.store.put('product','root',dict(self.p,name='spintoy',knowledge_product_id=owner['id']))
+        with patch.object(self.app,'queue_sword') as queue:
+            self.app.scan(p,w);self.app.scan(p,w)
+            queue.assert_called_once()
+            self.assertEqual(queue.call_args.args[2]['id'],old['id'])
+
     def test_new_sword_scan_suggests_once_and_preserves_review(self):
         from workbench.sword_recognition import run
         app=self.app;p=self.p['id'];w=self.w['id']

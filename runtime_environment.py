@@ -1,6 +1,20 @@
 """Make project-local media tools available to Python and child processes."""
 import os
+import shutil
 from pathlib import Path
+
+
+def resolve_codex(configured=None):
+    for name in (configured, 'codex'):
+        if name and (binary := shutil.which(name)):
+            return binary
+    local = os.environ.get('LOCALAPPDATA')
+    if os.name == 'nt' and local:
+        root = Path(local) / 'OpenAI' / 'Codex' / 'bin'
+        candidates = sorted(root.glob('*/codex.exe'), key=lambda p: p.stat().st_mtime, reverse=True)
+    else:
+        candidates = [Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')]
+    return next((binary for path in candidates if (binary := shutil.which(str(path)))), None)
 
 
 def configure():

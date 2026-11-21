@@ -3,6 +3,7 @@
 Every paid submission is checkpointed. Querying an accepted video never resubmits it.
 """
 import base64,json,os,re,shutil,subprocess,threading,time
+from runtime_environment import resolve_codex
 from uuid import uuid4
 from datetime import datetime
 from pathlib import Path
@@ -83,7 +84,7 @@ class Generation:
         file=self.app.root/'generation-config.json'
         cfg=read(file) if file.exists() else {}
         cfg.setdefault('dreamina_bin',str(REPO/'.dreamina-runtime/dreamina.exe') if os.name=='nt' else 'dreamina')
-        cfg.setdefault('codex_bin',shutil.which('codex') or 'codex')
+        cfg.setdefault('codex_bin','codex')
         cfg.setdefault('codex_model','gpt-6-luna')
         cfg.setdefault('voice_id',os.environ.get('ELEVENLABS_VOICE_ID',''))
         cfg.setdefault('tts_model','eleven_multilingual_v2')
@@ -93,7 +94,7 @@ class Generation:
     def status(self):
         c=self.config();secrets=read(self.app.root/'credentials.json') if (self.app.root/'credentials.json').exists() else {}
         return dict(c,dreamina_installed=bool(shutil.which(c['dreamina_bin']) or Path(c['dreamina_bin']).is_file()),
-            codex_installed=bool(shutil.which(c['codex_bin']) or Path(c['codex_bin']).is_file()),
+            codex_installed=bool(resolve_codex(c['codex_bin'])),
             elevenlabs_key_ready=bool(secrets.get('ELEVENLABS_API_KEY') or os.environ.get('ELEVENLABS_API_KEY')),
             login_verified=False)
 

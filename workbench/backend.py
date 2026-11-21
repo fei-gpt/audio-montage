@@ -2,6 +2,7 @@ from __future__ import annotations
 from contextlib import contextmanager, closing
 import base64, hashlib, hmac, ipaddress, json, os, re, secrets, shutil, socket, sqlite3, subprocess, threading, time, uuid
 import urllib.request, urllib.parse
+from runtime_environment import resolve_codex
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -331,7 +332,7 @@ class Workbench:
         if not cfg.get('base_url') or not cfg.get('model') or cfg.get('model','').startswith('YOUR'): missing.append('视觉API地址与模型')
         from vision_api import api_key
         if not api_key(cfg): missing.append('API 密钥（请在识别服务设置中填写）')
-        if cfg.get('provider')=='codex':missing=[] if shutil.which(cfg.get('codex_bin','codex')) else ['Codex CLI 未安装']
+        if cfg.get('provider')=='codex':missing=[] if resolve_codex(cfg.get('codex_bin')) else ['Codex CLI 未安装']
         import importlib.util
         from hypit_adapter import _hypit_command
         try: hypit_path=_hypit_command(None)
@@ -341,16 +342,16 @@ class Workbench:
         from vision_api import execution_config
         if execution_config.get():return dict(execution_config.get())
         path=self.root/'vision-config.json'
-        cfg=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'provider':'codex','base_url':'codex://local','model':'gpt-6-luna','codex_bin':shutil.which('codex') or (str(Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')) if Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex').is_file() else 'codex')}
-        if cfg.get('provider')=='codex' and not shutil.which(cfg.get('codex_bin') or 'codex'):
-            cfg['codex_bin']=shutil.which('codex') or cfg.get('codex_bin') or 'codex'
+        cfg=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'provider':'codex','base_url':'codex://local','model':'gpt-6-luna','codex_bin':'codex'}
+        if cfg.get('provider')=='codex':
+            cfg['codex_bin']=resolve_codex(cfg.get('codex_bin')) or 'codex'
         return cfg
     def set_config(self,cfg):
         if cfg.get('provider')=='codex':
             model=cfg.get('model','gpt-6-luna')
             if model!='gpt-6-luna':raise Problem('当前Codex处理固定使用gpt-6-luna，不自动换模型')
             from montage import save
-            save(self.root/'vision-config.json',{'provider':'codex','base_url':'codex://local','model':model,'codex_bin':shutil.which('codex') or (str(Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')) if Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex').is_file() else 'codex')})
+            save(self.root/'vision-config.json',{'provider':'codex','base_url':'codex://local','model':model,'codex_bin':'codex'})
             return self.status()
         url=str(cfg.get('base_url','')).rstrip('/');u=urllib.parse.urlsplit(url)
         if u.scheme!='https' and not(u.scheme=='http' and u.hostname in {'127.0.0.1','localhost','::1'}): raise Problem('模型地址须为HTTPS，本机转接允许HTTP')
@@ -603,7 +604,10 @@ class Workbench:
 
     def scan(self,p,w):
         self.workspace(p,w);from montage import probe,video_geometry,media_duration
-        auto_sword=self.product(p)['name'].strip().casefold() in {'lightplay','toy'}
+        product=self.product(p)
+        auto_sword=product['light_sword_product']
+        # Recover unclassified files scanned before shared-product recognition existed.
+        recover_missing=auto_sword and bool(product.get('knowledge_product_id'))
         found=[];errors=[]
         with self.lock:
             catalog={}
@@ -620,6 +624,7 @@ class Workbench:
                     stat=file.stat()
                     if stat.st_ino:foreign_files.add((stat.st_dev,stat.st_ino))
                 except OSError:pass
+            existing_shots={s['asset_id'] for s in self.store.all('shot',w) if not s.get('stale')} if recover_missing else set()
             shots_by_asset=None
             for lib in self.store.all('library',w):
                 root=Path(lib['path']);seen=set()
@@ -634,6 +639,11 @@ class Workbench:
                         if resolved in foreign_paths or (stat.st_dev,stat.st_ino) in foreign_files:raise Problem('文件已属于另一账号')
                         hash_=digest(path)
                         if old and old['sha256']==hash_ and old.get('available') and old['path']==str(path):
+                            if (recover_missing and not lib.get('category') and old['id'] not in existing_shots
+                                    and not any(old.get(key) for key in ('sword_recognition','user_category','category_review'))):
+                                old['sword_recognition']={'status':'queued'}
+                                self.store.put('asset',w,old)
+                                self.queue_sword(p,w,old)
                             found.append(old);continue
                         if old and old['sha256']==hash_:
                             a=dict(old,available=True,path=str(path),name=path.name)
@@ -710,8 +720,8 @@ class Workbench:
         if provider not in {None,'vision','codex'}:raise Problem('不支持的识别服务')
         if provider=='codex':
             if not isinstance(model,str) or not model.strip():raise Problem('Codex任务必须明确指定模型，不自动换模型')
-            j['analysis_config']={'provider':'codex','model':model.strip(),'base_url':'codex://local','codex_bin':shutil.which('codex') or (str(Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex')) if Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex').is_file() else 'codex')}
-        ready=bool(shutil.which(j['analysis_config'].get('codex_bin','codex'))) if provider=='codex' else self.status()['vision_ready']
+            j['analysis_config']={'provider':'codex','model':model.strip(),'base_url':'codex://local','codex_bin':'codex'}
+        ready=bool(resolve_codex(j['analysis_config'].get('codex_bin'))) if provider=='codex' else self.status()['vision_ready']
         if not ready:j.update(status='requires_configuration',stage='缺少Codex CLI配置' if provider=='codex' else '缺少识别配置：'+ '；'.join(self.status()['missing']))
         elif not j['allow_paid']:j.update(status='requires_consent',stage='需要明确允许本次向已配置模型发送资料并可能计费')
         self.store.put('job',scope,j)
@@ -729,7 +739,7 @@ class Workbench:
         if self.config().get('provider')=='codex':j['analysis_config']=dict(self.config())
         if w and not self.workspace(p,w)['assigned']:raise Problem('请先分配账号',409)
         if j.get('analysis_config',{}).get('provider')=='codex':
-            if not shutil.which(j['analysis_config'].get('codex_bin','codex')):raise Problem('请先安装Codex CLI',409)
+            if not resolve_codex(j['analysis_config'].get('codex_bin')):raise Problem('请先安装Codex CLI',409)
         elif not self.status()['vision_ready']:raise Problem('请先完成视觉API配置',409)
         if allow_paid is not True:raise Problem('需要明确允许本次模型调用',409)
         if asset_ids is not None:

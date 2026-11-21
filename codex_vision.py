@@ -3,6 +3,7 @@ import json,os,shutil,subprocess,tempfile
 import urllib.request
 from uuid import uuid4
 from pathlib import Path
+from runtime_environment import resolve_codex
 from asset_index import digest_json
 from montage import fingerprint,read,save
 from vision_json import decode_response
@@ -18,7 +19,7 @@ def request_not_sent(prefix):
 def call(config,prompt,evidence,cache,allow_paid,*,output_schema=None):
     model=config.get('model')
     if not isinstance(model,str) or not model.strip():raise ValueError('Codex必须明确指定模型')
-    binary=shutil.which(config.get('codex_bin','codex'))
+    binary=resolve_codex(config.get('codex_bin'))
     if not binary:raise ValueError('找不到Codex CLI')
     for frame in evidence:
         if not Path(frame['path']).is_file():raise ValueError('Codex证据图片缺失；未发送请求：'+frame['path'])
