@@ -140,11 +140,11 @@ function editingHome(){
   $('#retryEditingDetail')?.addEventListener('click',()=>{editingDetails.delete(summary);editingHome()});
   if(batch?.history_summary)loadEditingDetail(summary);
   $('#editPrev')?.addEventListener('click',()=>{editingPage--;render()});$('#editNext')?.addEventListener('click',()=>{editingPage++;render()});
-  document.querySelectorAll('[data-edit-regenerate]').forEach(b=>b.onclick=()=>regenerateEdit(b.dataset.editRegenerate));
-  document.querySelectorAll('[data-edit-review]').forEach(b=>b.onclick=()=>editTaskDialog(b.dataset.editReview));
-  document.querySelectorAll('[data-edit-detail]').forEach(b=>b.onclick=()=>editTaskDialog(b.dataset.editDetail));
-  document.querySelectorAll('[data-edit-retry]').forEach(b=>b.onclick=event=>{event.preventDefault();editOperation('resume',b.dataset.editRetry)});
-  document.querySelectorAll('[data-edit-batch-action]').forEach(b=>b.onclick=()=>editOperation(b.dataset.editBatchAction));
+  document.querySelectorAll('[data-edit-regenerate]').forEach(b=>b.onclick=()=>regenerateEdit(b.dataset.editRegenerate,batch));
+  document.querySelectorAll('[data-edit-review]').forEach(b=>b.onclick=()=>editTaskDialog(b.dataset.editReview,batch));
+  document.querySelectorAll('[data-edit-detail]').forEach(b=>b.onclick=()=>editTaskDialog(b.dataset.editDetail,batch));
+  document.querySelectorAll('[data-edit-retry]').forEach(b=>b.onclick=event=>{event.preventDefault();editOperation('resume',b.dataset.editRetry,{},batch)});
+  document.querySelectorAll('[data-edit-batch-action]').forEach(b=>b.onclick=()=>editOperation(b.dataset.editBatchAction,undefined,{},batch));
 }
 async function editUploadFile(file,kind,workspace){
   if(file.size>500000000)throw Error('单个文件不能超过500MB');
@@ -466,8 +466,7 @@ function editOperation(op,taskId,extra={},batch=currentEditBatch()){
     $('#editGo').onclick=()=>{if(!$('#editPaid').checked)return toast('请明确允许本次模型调用');go(true)};
   }else return go(false);
 }
-function regenerateEdit(id){
-  const b=currentEditBatch();
+function regenerateEdit(id,b=currentEditBatch()){
   if(!b?.tasks.some(t=>t.id===id&&canRegenerate(t)))return;
   const launch=allowPaid=>action(async()=>{
     const result=await api(`${wb()}/editing/batches/${b.id}/regenerate`,'POST',{task_ids:[id],allow_paid:allowPaid});
@@ -541,7 +540,7 @@ async function inspectEditPreview(batch,task,panel,finalButton,workspace){
   function reselect(){
     if(!canRegenerate(task))return;
     panel.insertAdjacentHTML('beforeend','<button type="button" data-reselect>沿用要求，重新选片</button>');
-    panel.querySelector('[data-reselect]').onclick=()=>regenerateEdit(task.id);
+    panel.querySelector('[data-reselect]').onclick=()=>regenerateEdit(task.id,batch);
   }
   async function check(showOptions){
     try{await loadOptions(showOptions)}catch(error){
@@ -580,8 +579,8 @@ async function inspectEditPreview(batch,task,panel,finalButton,workspace){
   }
   await check(false);
 }
-function editTaskDialog(id){
-  const b=currentEditBatch(),t=b.tasks.find(t=>t.id===id);if(!t)return;
+function editTaskDialog(id,b=currentEditBatch()){
+  const t=b?.tasks.find(t=>t.id===id);if(!t)return;
   const busy=['queued','running'].includes(t.status),off=closedEditStatuses.has(t.status);
   const ready=['ready','timing_ready'].includes(t.status),canContinue=stoppedEditStatuses.has(t.status)||t.status==='needs_attention';
   dialog(t.name,`<div style="max-height:72vh;overflow:auto"><p>${badge(editStatusLabel(t))} ${t.source_warning?'':esc(t.stage)}</p>${t.source_warning||t.error?`<p class="error">${esc(t.source_warning||t.error)}</p>`:''}
@@ -598,7 +597,7 @@ function editTaskDialog(id){
   $('#inspectReference')?.addEventListener('click',()=>showReferenceReview(b,t));
   bindReferenceMatchPanel(b,t,busy||off);
   $('#editSavePlan')?.addEventListener('click',()=>{try{editOperation('save-plan',id,{plan:JSON.parse($('#editPlanJson').value),plan_revision:t.plan_revision},b)}catch(e){toast('JSON 格式错误：'+e.message)}});
-  $('#editReselect')?.addEventListener('click',()=>regenerateEdit(id));
+  $('#editReselect')?.addEventListener('click',()=>regenerateEdit(id,b));
   const preflight=$('#editPreviewCheck');
   if(preflight)inspectEditPreview(b,t,preflight,$('#editFinal'),wb());
   $('#editFinal')?.addEventListener('click',()=>{editOperation('output',id,{content_confirmed:b.rules.mode==='preview',preview_sha256:t.preview?.sha256,plan_revision:t.plan_revision},b)});
@@ -642,6 +641,6 @@ function bindReferenceMatchPanel(batch, task, locked) {
       if (apply) apply.disabled = locked || part.shot_id===choice.shot_id;
     }
     row.ontoggle = select.onchange = show;
-    if (apply) apply.onclick = () => editOperation('replace-shot', task.id, {index,option:Number(select.value),plan_revision:task.plan_revision});
+    if (apply) apply.onclick = () => editOperation('replace-shot', task.id, {index,option:Number(select.value),plan_revision:task.plan_revision},batch);
   }
 }

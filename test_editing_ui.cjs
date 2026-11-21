@@ -354,3 +354,18 @@ context.editOperation('resume','6').then(async()=>{
   library.assets.pop();
   assert.equal(context.editingInventory(library),'素材 1 条');
 }
+
+{
+  const calls=[];
+  const ui={wb:()=>'/original-workspace',W:()=>({editing_batches:[]}),P:()=>({}),
+    action:fn=>fn(),api:async(url,method,body)=>{calls.push({url,body});return {id:'new'}},
+    $:()=>({open:false}),document:{querySelectorAll:()=>[]}};
+  vm.createContext(ui);
+  vm.runInContext(fs.readFileSync('workbench/static/editing.js','utf8'),ui);
+  const task={id:'original-task',status:'awaiting_review',plan:{}};
+  const batch={id:'original-batch',rules:{matching_mode:'duration'},tasks:[task]};
+  ui.regenerateEdit(task.id,batch);
+  assert.equal(calls[0].url,'/original-workspace/editing/batches/original-batch/regenerate');
+  assert.deepEqual(Array.from(calls[0].body.task_ids),[task.id]);
+  console.log('Open preview retains its batch while history detail is reloading');
+}
