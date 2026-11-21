@@ -8,6 +8,19 @@ function renderModuleNavigation(){
   }
 }
 let editingBatchId=null,editingPage=1;
+const editingDetails=new WeakMap();
+
+async function loadEditingDetail(summary){
+  if(editingDetails.has(summary))return;
+  const workspace=wb();
+  editingDetails.set(summary,{});
+  try{
+    const batch=await api(workspace+'/editing/batches/'+summary.id);
+    editingDetails.set(summary,{batch});
+  }catch(error){editingDetails.set(summary,{error:error.message})}
+  if(activeModule()==='editing'&&workspace===wb()&&editingBatchId===summary.id&&
+     W()?.editing_batches.includes(summary))editingHome();
+}
 
 function editOutputName(output){return output?.path?.split(/[\\/]/).pop()||''}
 function editDownloadLink(output){
@@ -28,6 +41,11 @@ function editBatchLabel(batch){
 function canRegenerate(t){return Boolean(t.plan)&&!['queued','running','invalid'].includes(t.status)}
 function editingHistory(batches,batch,data){
   if(!batch)return '<section class="panel recent"><h2>剪辑历史</h2><p class="muted">还没有剪辑记录。</p></section>';
+  const selector=`<div class="section-heading"><h2>剪辑历史</h2><label class="field"><span>查看记录</span><select id="editBatch" aria-label="查看剪辑记录">${[...batches].reverse().map(b=>`<option value="${esc(b.id)}" ${b.id===batch.id?'selected':''}>${esc(editBatchLabel(b))}</option>`).join('')}</select></label></div>`;
+  if(batch.history_summary){
+    const error=editingDetails.get(batch)?.error;
+    return `<section class="panel recent">${selector}${error?`<p role="alert">${esc(error)}</p><button id="retryEditingDetail">重新加载记录</button>`:'<p role="status">正在读取本批剪辑记录…</p>'}</section>`;
+  }
   const active=batch.tasks.filter(t=>!closedEditStatuses.has(t.status));
   const runnable=active.filter(t=>!t.source_warning);
   const busy=active.some(t=>['queued','running'].includes(t.status));
@@ -35,7 +53,7 @@ function editingHistory(batches,batch,data){
   const canPreview=!busy&&runnable.some(t=>t.plan&&!t.preview);
   const completed=batch.tasks.filter(t=>t.output).length;
   return `<section class="panel recent">
-    <div class="section-heading"><h2>剪辑历史</h2><label class="field"><span>查看记录</span><select id="editBatch" aria-label="查看剪辑记录">${[...batches].reverse().map(b=>`<option value="${esc(b.id)}" ${b.id===batch.id?'selected':''}>${esc(editBatchLabel(b))}</option>`).join('')}</select></label></div>
+    ${selector}
     <p class="small muted">${batch.rules.mode==='direct'?'直接输出':'先预览再确认'} · ${batch.tasks.length} 条 · 已有成片 ${completed} 条</p>
     ${batch.tasks.length&&batch.tasks.every(t=>!t.output&&!['queued','running','completed'].includes(t.status))?'<button id="deleteEditRecord" type="button">删除此记录</button>':''}
     <div class="reference"><strong>本批剪辑要求</strong>
@@ -70,7 +88,8 @@ function editingInventory(w){
 function editingHome(){
   const p=P();if(p)wid=defaultWorkspace(p,wid,accountPreferences);const w=W(),batches=w?.editing_batches||[];
   if(!batches.some(b=>b.id===editingBatchId))editingBatchId=batches.at(-1)?.id||null;
-  const batch=batches.find(b=>b.id===editingBatchId),data=editingRows(batch?.tasks||[],editingPage);editingPage=data.page;
+  const summary=batches.find(b=>b.id===editingBatchId),batch=currentEditBatch()||summary;
+  const data=editingRows(batch?.tasks||[],editingPage);editingPage=data.page;
   const previousTable=$('#editHistoryTable');
   const historyScroll=previousTable?.dataset?.batch===batch?.id&&previousTable?.dataset?.page===String(data.page)
     ? [previousTable.scrollLeft,previousTable.scrollTop] : null;
@@ -78,7 +97,7 @@ function editingHome(){
   $('#crumb').textContent='视频剪辑制作'+(p?' / '+p.name:'')+(w?' / '+w.name:'');
   $('#main').innerHTML=`<div class="heading"><div><h1>视频剪辑制作</h1><div class="muted">选择手头已有的文件，开始剪辑</div></div>${p?'<button id="openEditingGuidelines" type="button">剪辑总纲</button>':''}<button id="editRefresh">刷新</button></div>
   <section class="panel form-panel"><label class="field"><span>产品</span><select id="editProduct"><option value="">选择产品</option>${state.products.map(x=>`<option value="${x.id}" ${x.id===pid?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>${p?accountSelector():''}
-  <p class="small muted">${w?.assigned?'自动使用当前账号的素材库 · '+editingInventory(w):'请先在「素材处理」中为当前账号接入素材库。'}</p>
+  <p class="small muted">${w?.assigned?'自动使用当前账号的素材库 · '+editingInventory(w):!p?'请选择要剪辑的产品。':!w?'请选择账号以查看素材库。':'请先在「素材处理」中为当前账号接入素材库。'}</p>
   <div class="edit-entry-options">
     <div><button id="newPairBatch" ${disabled}>批量导入视频＋配音</button><p class="small muted">已有多组同名 MP4 和 MP3，例如 001.mp4 和 001.mp3。选一个文件夹，按文件名配对后批量创建任务。</p></div>
     <div><button id="newReferenceBatch" ${p?.sentence_editing_only?'disabled':disabled}>按参考视频剪辑</button><p class="small muted">已有想参考的成片。上传参考视频，用素材库里的画面匹配它的镜头和节奏，配音可选。</p></div>
@@ -89,7 +108,7 @@ function editingHome(){
     const table=$('#editHistoryTable');
     [table.scrollLeft,table.scrollTop]=historyScroll;
   }
-  $('#editProduct').onchange=e=>{pid=e.target.value||null;wid=null;editingBatchId=null;render()};
+  $('#editProduct').onchange=e=>{pid=e.target.value||null;rememberEditingProduct(pid);wid=null;editingBatchId=null;render()};
   $('#openEditingGuidelines')?.addEventListener('click',()=>{
     dialog('剪辑总纲',`<form id="editingGuidelinesForm">
       <label class="field"><span>${esc(p.name)} · 同产品共用，参考视频剪辑除外</span>
@@ -118,6 +137,8 @@ function editingHome(){
     });
   });
   $('#editBatch')?.addEventListener('change',e=>{editingBatchId=e.target.value;editingPage=1;render()});
+  $('#retryEditingDetail')?.addEventListener('click',()=>{editingDetails.delete(summary);editingHome()});
+  if(batch?.history_summary)loadEditingDetail(summary);
   $('#editPrev')?.addEventListener('click',()=>{editingPage--;render()});$('#editNext')?.addEventListener('click',()=>{editingPage++;render()});
   document.querySelectorAll('[data-edit-regenerate]').forEach(b=>b.onclick=()=>regenerateEdit(b.dataset.editRegenerate));
   document.querySelectorAll('[data-edit-review]').forEach(b=>b.onclick=()=>editTaskDialog(b.dataset.editReview));
@@ -421,9 +442,11 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
     });
   };
 }
-function currentEditBatch(){return W()?.editing_batches?.find(b=>b.id===editingBatchId)}
-function editOperation(op,taskId,extra={}){
-  const batch=currentEditBatch();
+function currentEditBatch(){
+  const summary=W()?.editing_batches?.find(b=>b.id===editingBatchId);
+  return summary?.history_summary?editingDetails.get(summary)?.batch:summary;
+}
+function editOperation(op,taskId,extra={},batch=currentEditBatch()){
   if(!batch)return;
   const runnable=batch.tasks.filter(t=>!t.source_warning);
   if((op==='resume'||op==='continue-stopped')&&!taskId){
@@ -514,7 +537,6 @@ function editReplacementPicker(panel,issues,batch,submit){
 }
 async function inspectEditPreview(batch,task,panel,finalButton,workspace){
   const wasDisabled=finalButton?.disabled;
-  if(finalButton)finalButton.disabled=true;
   const endpoint=workspace+'/editing/batches/'+batch.id+'/';
   function reselect(){
     if(!canRegenerate(task))return;
@@ -529,7 +551,7 @@ async function inspectEditPreview(batch,task,panel,finalButton,workspace){
     }
   }
   async function loadOptions(showOptions){
-    panel.textContent=showOptions?'正在查找等长备选镜头…':'正在检查输入文件、素材版本和引用次数…';
+    panel.textContent=showOptions?'正在查找等长备选镜头…':wasDisabled===false?'正在检查素材。看完预览后即可确认输出，工作台会在导出前校验素材和引用次数。':'正在检查输入文件、素材版本和引用次数…';
     const report=await api(endpoint+(showOptions?'replacement-options':'preview-check'),'POST',{task_id:task.id});
     if(!panel.isConnected)return;
     const blocked=report.fixed.length||report.issues.length;
@@ -572,14 +594,14 @@ function editTaskDialog(id){
   ${t.reference_analysis?`<details><summary>参考视频结构（采样初审，非精确切点）</summary>${t.reference_analysis.beats.map(x=>`<p>${x.start}–${x.end}秒 · ${esc(x.purpose)} · ${esc(x.action)} · ${esc(x.composition)}</p>${x.must_see?`<p>必须看见 · ${esc(x.must_see.join('；'))}</p>${x.flexible?.length?`<p>允许变化 · ${esc(x.flexible.join('；'))}</p>`:''}`:''}`).join('')}</details>`:''}${t.plan?`<details><summary>剪辑清单（${t.plan.parts.length}段）</summary>${t.plan.parts.map(p=>`<p class="small">${p.timeline_start.toFixed(2)}–${p.timeline_end.toFixed(2)} 秒 · <strong>${esc(p.source_name||W()?.assets?.find(a=>a.id===(p.asset_id||p.shot_id))?.name||'源文件名未记录')}</strong> · ${esc(p.reason)}</p>`).join('')}<label class="field"><span>修正清单 JSON（只能使用已确认镜头与安全区间）</span><textarea id="editPlanJson" style="min-height:180px">${esc(JSON.stringify(t.plan,null,2))}</textarea></label><button id="editSavePlan" ${busy||off?'disabled':''}>保存修改并重新预览</button></details>`:''}
   ${off?'':`<div class="inline" style="margin-top:16px">${t.source_warning?'':ready?'<button data-edit-op="plan">规划选片</button>':canContinue?'<button data-edit-op="resume">继续任务</button>':''}<button data-edit-op="preview" ${!t.plan||busy||t.source_warning?'disabled':''}>生成预览</button><button data-edit-op="pause" ${busy||ready?'':'disabled'}>暂停</button><button data-edit-op="cancel">取消</button></div>`}
   ${t.plan&&!off?`<div style="margin-top:16px">${t.source_warning&&!busy?'<button id="editReselect">沿用要求，重新选片</button>':b.rules.mode==='preview'?'<p class="small muted">请先播放预览，核对内容、动作完整性、配音时间轴和音画衔接。</p>':''}<button class="primary" id="editFinal" ${busy||t.source_warning||t.plan.reference_gaps?.length||b.rules.mode==='preview'&&!t.preview?'disabled':''}>${b.rules.mode==='direct'?'直接输出（未人工审片）':'已核对，确认输出'}</button></div>`:''}</div>`);
-  document.querySelectorAll('[data-edit-op]').forEach(button=>button.onclick=()=>editOperation(button.dataset.editOp,id));
+  document.querySelectorAll('[data-edit-op]').forEach(button=>button.onclick=()=>editOperation(button.dataset.editOp,id,{},b));
   $('#inspectReference')?.addEventListener('click',()=>showReferenceReview(b,t));
   bindReferenceMatchPanel(b,t,busy||off);
-  $('#editSavePlan')?.addEventListener('click',()=>{try{editOperation('save-plan',id,{plan:JSON.parse($('#editPlanJson').value),plan_revision:t.plan_revision})}catch(e){toast('JSON 格式错误：'+e.message)}});
+  $('#editSavePlan')?.addEventListener('click',()=>{try{editOperation('save-plan',id,{plan:JSON.parse($('#editPlanJson').value),plan_revision:t.plan_revision},b)}catch(e){toast('JSON 格式错误：'+e.message)}});
   $('#editReselect')?.addEventListener('click',()=>regenerateEdit(id));
   const preflight=$('#editPreviewCheck');
   if(preflight)inspectEditPreview(b,t,preflight,$('#editFinal'),wb());
-  $('#editFinal')?.addEventListener('click',()=>{editOperation('output',id,{content_confirmed:b.rules.mode==='preview',preview_sha256:t.preview?.sha256,plan_revision:t.plan_revision})});
+  $('#editFinal')?.addEventListener('click',()=>{editOperation('output',id,{content_confirmed:b.rules.mode==='preview',preview_sha256:t.preview?.sha256,plan_revision:t.plan_revision},b)});
 }
 
 function referenceMatchPanel(batch, task, locked) {

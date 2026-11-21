@@ -613,8 +613,11 @@ class EditingTest(unittest.TestCase):
                                  action_start=None,action_end=None,confirmed_categories=labels)
             parts.append(dict(shot_id=key,reference_beat=i+1,start=0,frames=15,reason='符合参考动作'))
         plan={'parts':parts}
-        with self.assertRaisesRegex(ValueError,'最多连续三镜'):
+        with self.assertRaisesRegex(ValueError,'展示不同灯效.*最多出现一次'):
             edit.validate_plan(batch,task,plan,candidates)
+        for candidate in candidates.values():
+            candidate['confirmed_categories']=['四把光剑旋转']
+        self.assertEqual(len(edit.validate_plan(batch,task,plan,candidates)['parts']),4)
         ref=self.upload(self.intro,'reference')
         task.update(reference_analysis={'beats':[dict(start=i*.5,end=(i+1)*.5,purpose='旋转') for i in range(4)]},
                     plan={'light_sword_rotations':True})

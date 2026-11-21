@@ -474,6 +474,31 @@ class WorkbenchTest(unittest.TestCase):
         shots=self.app.store.all('shot',self.w['id']);self.assertEqual(len(shots),1);self.assertEqual(shots[0]['start'],0);self.assertAlmostEqual(shots[0]['end'],2);self.assertEqual(shots[0]['review_decision'],'uncertain')
 
 class HTTPIsolationTest(unittest.TestCase):
+    def test_editing_product_index_and_scoped_history_detail(self):
+        app=self.server.app
+        p=app.create_product('first')['id'];q=app.create_product('second')['id']
+        w=app.create_workspace(p,'one')['id'];other=app.create_workspace(q,'two')['id']
+        batch=app.store.put('edit_batch',w,{'workspace_id':w,'rules':{'request':'keep this'}})['id']
+        app.store.put('edit_task',w,{'batch_id':batch,'status':'awaiting_review','name':'sample',
+                                    'preview':{'sha256':'test-version'},'plan':{'parts':[]}})
+        query='/api/state?view=workbench&history=index&editing_product='
+        state=json.load(self.request(query+p))
+        products={v['id']:v for v in state['products']}
+        self.assertFalse(products[q]['workspaces'])
+        index=products[p]['workspaces'][0]['editing_batches'][0]
+        self.assertTrue(index['history_summary'])
+        self.assertEqual(index['tasks'],[{'name':'sample','status':'awaiting_review'}])
+        self.assertEqual(json.load(self.request(query+p+'&since='+state['revision'])),{'unchanged':True})
+        switched=json.load(self.request(query+q+'&since='+state['revision']))
+        self.assertTrue(next(v for v in switched['products'] if v['id']==q)['workspaces'])
+        path=f'/api/products/{p}/workspaces/{w}/editing/batches/{batch}'
+        detail=json.load(self.request(path))
+        self.assertEqual(detail['rules']['request'],'keep this')
+        self.assertIn('sig=',detail['tasks'][0]['preview']['media_url'])
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            self.request(f'/api/products/{q}/workspaces/{other}/editing/batches/{batch}')
+        self.assertEqual(denied.exception.code,404)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.server=make_server(Path(self.tmp.name)/'state',0);self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start();self.url=f'http://127.0.0.1:{self.server.server_port}'
     def tearDown(self):self.server.shutdown();self.server.server_close();self.server.app.pool.shutdown(wait=True);self.tmp.cleanup()

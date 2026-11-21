@@ -234,14 +234,18 @@ class Editing:
         if batch.get('deleted_from_history') and not include_deleted:raise Problem('这条批次记录已删除',404)
         return batch
 
-    def list(self,p,w,*,assets=None):
-        self.app.workspace(p,w)
-        batches=[b for b in self.store.all('edit_batch',w) if not b.get('deleted_from_history')]
+    def list(self,p,w,*,assets=None,batch_id=None):
+        if batch_id:
+            batches=[self.batch(p,w,batch_id)]
+        else:
+            self.app.workspace(p,w)
+            batches=[b for b in self.store.all('edit_batch',w) if not b.get('deleted_from_history')]
         grouped={b['id']:[] for b in batches}
         if batches:
             if assets is None:assets=self.app.visible_assets(w)
             versions={a['id']:a['sha256'] for a in assets}
-            for task in self.store.all('edit_task',w):
+            tasks=self.store.batch_tasks(w,batch_id) if batch_id else self.store.all('edit_task',w)
+            for task in tasks:
                 if task['batch_id'] in grouped:
                     if task.get('plan') and not task.get('output') and task['status'] not in {'completed','cancelled','invalid'}:
                         warning=plan_source_warning(task['plan'],versions)
@@ -910,9 +914,7 @@ class Editing:
         labels=set(candidate.get('confirmed_categories') or ())
         return bool(labels & LIGHT_SWORD_ROTATIONS[kind]) and not labels & LIGHT_SWORD_ROTATION_START
 
-    def light_sword_guideline_error(self,parts,candidates,rules,*,partial=False):
-        if not partial and not self.has_both_rotations(parts,candidates):
-            return '光剑剪辑总纲要求分别包含单把旋转和四把旋转镜头'
+    def light_sword_guideline_error(self,parts,candidates,rules):
         labels_by_shot=[set(candidates[part['shot_id']].get('confirmed_categories') or ()) for part in parts]
         counts=Counter(label for labels in labels_by_shot for label in labels)
         assembly={'拆分光剑','安装光剑'}
@@ -922,23 +924,11 @@ class Editing:
             specified.update(re.findall(r'(?:必须用|优先用|只用|使用)\s*(拆分光剑|安装光剑)',rules.get('request','')))
         if any(counts[label] and label not in specified for label in assembly):
             return '光剑剪辑总纲要求明确指定后才能使用拆分或安装镜头'
-        if any(set.intersection(*labels_by_shot[i:i+4]) for i in range(len(labels_by_shot)-3)):
-            return '光剑剪辑总纲要求同一展示类别最多连续三镜'
         if counts['拆分光剑']+counts['安装光剑']>1:
             return '光剑剪辑总纲要求拆分与安装合计最多出现一次'
         for label in ('产品揭示','带货指引','展示不同灯效'):
             if counts[label]>1:return f'光剑剪辑总纲要求「{label}」最多出现一次'
         return None
-
-    @staticmethod
-    def has_both_rotations(parts,candidates):
-        from product_display import LIGHT_SWORD_ROTATIONS
-        single=[];four=[]
-        for i,part in enumerate(parts):
-            labels=set(candidates[part['shot_id']].get('confirmed_categories') or ())
-            if labels & LIGHT_SWORD_ROTATIONS['single']:single.append(i)
-            if labels & LIGHT_SWORD_ROTATIONS['four']:four.append(i)
-        return bool(single and four and (len(single)>1 or len(four)>1 or single[0]!=four[0]))
 
     @staticmethod
     def vary_plan(b,t,proposal):
@@ -1021,7 +1011,6 @@ class Editing:
                     raise ValueError('没有符合类别要求的可用镜头：'+rule['text'])
             parent_sources={part['asset_sha256'] for part in parent['plan']['parts']} if parent else set()
             from product_display import LIGHT_SWORD_ROTATIONS
-            single_ids={c['id'] for c in candidates if contains_category(c,LIGHT_SWORD_ROTATIONS['single'])}
             from workbench.usage import overlapping_uses
             # An interval can become eligible exactly where a previous use ends.
             # Expose those boundaries to the planner instead of sampling past them.
@@ -1065,7 +1054,7 @@ class Editing:
                     return None
                 current=by_id[part['shot_id']]
                 if contains_category(current,excluded):return None
-                if sword and self.light_sword_guideline_error([*parts,part],by_id,b['rules'],partial=True):
+                if sword and self.light_sword_guideline_error([*parts,part],by_id,b['rules']):
                     return None
                 needs_early=early and not any(p['shot_id'] in early_ids for p in parts[1:4])
                 early_match=2<=ordinal<=4 and part['shot_id'] in early_ids
@@ -1086,13 +1075,11 @@ class Editing:
                 if source in parent_sources:
                     reused_frames=part['frames']+sum(p['frames'] for p in parts if p['asset_sha256'] in parent_sources)
                     if reused_frames*5>total*2:return None
-                needs_single=early and sword and not any(p['shot_id'] in single_ids for p in parts)
                 specified=any(shot_request_matches(rule,ordinal,frame,last) for rule in requests)
                 rotation_labels=LIGHT_SWORD_ROTATIONS['single'] | LIGHT_SWORD_ROTATIONS['four']
                 prefer_rotation=sword and not specified and not last and not contains_category(current,rotation_labels)
                 rank=(rank,int(bool(needs_early and 2<=ordinal<=4 and not early_match)),
                       int(prefer_rotation),
-                      int(bool(needs_single and ordinal>1 and part['shot_id'] not in single_ids)),
                       int(source in parent_sources),peer_counts[source])
                 if not sword or not parts:return (*rank,0)
                 prior=by_id[parts[-1]['shot_id']]

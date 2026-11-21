@@ -87,6 +87,11 @@ class UsageRecords:
 
 
 def read_ledger(store, extra_paths=(), *, workspace=None):
+    with store.read_session():
+        return _read_ledger(store,extra_paths,workspace)
+
+
+def _read_ledger(store,extra_paths,workspace):
     events = {}
     batches = {}
     for task in store.all('edit_task'):

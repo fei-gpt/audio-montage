@@ -47,6 +47,7 @@ class Store:
     def __init__(self, root):
         self.root=Path(root).resolve(); self.root.mkdir(parents=True,exist_ok=True)
         self.revision=uid()
+        self._readers=threading.local()
         with self.db() as c:
             c.execute('PRAGMA journal_mode=WAL')
             c.execute('CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY, kind TEXT NOT NULL, scope TEXT NOT NULL, body TEXT NOT NULL)')
@@ -57,6 +58,20 @@ class Store:
         try:
             with connection:yield connection
         finally:connection.close()
+    @contextmanager
+    def read_session(self):
+        """Reuse one connection for nested reads on the same worker thread."""
+        existing=getattr(self._readers,'connection',None)
+        if existing is not None:
+            yield existing
+            return
+        with self.db() as connection:
+            self._readers.connection=connection
+            try:
+                yield connection
+            finally:
+                del self._readers.connection
+
     def put(self, kind, scope, obj):
         return self.put_many(scope,[(kind,obj)])[0]
     def put_many(self, scope, records):
@@ -76,17 +91,17 @@ class Store:
         self.revision=uid()
         return saved
     def get(self, kind, ident, scope=None):
-        with self.db() as c:
+        with self.read_session() as c:
             row=c.execute('SELECT scope,body FROM objects WHERE kind=? AND id=?',(kind,ident)).fetchone()
         if not row or (scope is not None and row[0]!=scope): raise Problem('记录不存在或不属于当前账号',404)
         return json.loads(row[1])
     def all(self, kind, scope=None):
-        with self.db() as c:
+        with self.read_session() as c:
             rows=c.execute('SELECT body FROM objects WHERE kind=?'+(' AND scope=?' if scope is not None else ''),(kind,scope) if scope is not None else (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def batch_tasks(self,workspace,batch_id):
-        with self.db() as c:
+        with self.read_session() as c:
             rows=c.execute("SELECT body FROM objects WHERE kind='edit_task' AND scope=? AND json_extract(body,'$.batch_id')=?",
                            (workspace,batch_id)).fetchall()
         return [json.loads(row[0]) for row in rows]
@@ -210,6 +225,9 @@ class Workbench:
         product['light_sword_product']=is_light_sword
         product['editing_guidelines']=owner.get('editing_guidelines',LIGHT_SWORD_CUT.strip() if is_light_sword else '')
         if is_light_sword:
+            obsolete_rule='每条光剑成片必须分别安排单把光剑旋转和四把光剑旋转，各至少一个镜头，以用户确认的素材类别为依据。'
+            product['editing_guidelines']='\n'.join(line for line in product['editing_guidelines'].split('\n') if line.strip()!=obsolete_rule)
+            product['editing_guidelines']=product['editing_guidelines'].replace('相同角度换颜色、同类旋转灯效、同构图反复手持等同类展示最多连续三镜。第四镜必须改变展示方式或构图（如手持变旋转、近景变全景、静物变入画揭示），仅换颜色不算变化。','同一种展示类别可以连续使用，连续镜数不限。')
             product['shot_categories']=owner.get('shot_categories') or list(LIGHT_SWORD_CATEGORIES)
             product['shot_category_aliases']=owner.get('shot_category_aliases',{})
         return product
@@ -563,6 +581,16 @@ class Workbench:
         if libraries is None:libraries=self.store.all('library',w)
         roots={lib['id']:Path(lib['path']).resolve() for lib in libraries}
         libraries={lib['id']:lib for lib in libraries}
+        # The common case is a flat library of regular files. One directory
+        # read avoids resolving every video on every workbench state request.
+        regular={}
+        for root in set(roots.values()):
+            try:
+                with os.scandir(root) as entries:
+                    regular[root]={entry.name for entry in entries if entry.is_file(follow_symlinks=False)
+                                   and not entry.is_symlink()}
+            except OSError:
+                pass
         visible=[]
         for asset in self.store.all('asset',w):
             if not asset.get('available'):continue
@@ -570,7 +598,8 @@ class Workbench:
             root=roots.get(asset.get('library_id'))
             try:
                 file=Path(asset['path'])
-                if root and file.is_file() and root in file.resolve().parents:
+                listed=root and file.parent==root and file.name in regular.get(root,())
+                if listed or (root and file.is_file() and root in file.resolve().parents):
                     if library.get('category') and not asset.get('replaced_source') and not asset.get('category_review',{}).get('confirmed'):
                         asset['category_review']={'labels':[library['category']],'status':'来自类别文件夹',
                                                   'evidence':library['name'],'confirmed':True}
