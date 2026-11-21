@@ -184,7 +184,7 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   <label class="field"><span>使用哪一种素材识别结果？</span><select name="analysis_mode"><option value="simple" ${P().analysis_mode==='simple'?'selected':''}>简单展示结果</option><option value="standard" ${P().analysis_mode!=='simple'?'selected':''}>明确标准结果（含旧版记录）</option></select></label><label class="field"><span>剪辑匹配方式</span><select name="matching_mode"><option value="duration">时长匹配 · 按断句长度选素材（不调用模型）</option>${P()?.sentence_editing_only?'':`<option value="semantic">语义匹配 · 按文案意思选画面（调用模型）</option>`}</select></label><div class="field" id="editSemanticRequest"><label for="editCommonRequest">本批通用剪辑要求（可选）</label><textarea id="editCommonRequest" name="request" placeholder="第一镜必须用四把光剑旋转&#10;最后一镜优先用带货指引"></textarea>
     ${P().shot_categories?.length?`<div class="request-categories" role="group" aria-label="展示类别"><small>展示类别（点击插入，多类用 + 连接）</small><div>${categoryButtonsHTML(P().shot_categories)}</div></div>`:''}
     <small>按时长选片时，用素材类别名称指定第几镜、最后一镜或时间码。多条要求用换行或分号分隔。<br><strong>必须</strong>：第一镜必须用四把光剑旋转，只接受这个标签。最后一镜必须用四把光剑旋转+旋转到停下，先找恰好带这两个标签的素材。素材不足时，可用只带其中一个标签的素材补上。<br><strong>优先</strong>：最后一镜优先用带货指引。找不到合适镜头时可以换别的类别。<br><strong>排除</strong>：第三镜必须用单把光剑旋转，排除静止到旋转。</small></div>
-  ${referenceMode?'':'<label class="field" id="editTargetDuration"><span>成片时长</span><select name="length_mode"><option value="voice">跟随配音</option><option value="music">跟随背景音乐</option><option value="custom">自定义秒数</option></select><input name="target_duration" aria-label="自定义成片秒数" placeholder="自定义秒数" type="number" min="0.1" max="600" step="0.001"></label>'}
+  ${referenceMode?'':'<label class="field" id="editTargetDuration"><span>成片时长</span><select name="length_mode"><option value="voice">跟随配音</option><option value="music">跟随背景音乐</option><option value="custom">自定义秒数</option></select><input name="target_duration" aria-label="自定义成片秒数" placeholder="自定义秒数" type="number" min="0.1" max="600" step="0.001"><small id="editDurationLimit" hidden></small></label>'}
   <label class="field" id="editVariantField"><span>候选数量</span><select name="variant_count"><option value="1">1 条</option><option value="5">5 条</option><option value="10">10 条</option><option value="15">15 条</option></select><small>多条候选沿用同一要求，先生成预览供你选择。只统计正式导出的素材引用。</small></label>
   <label class="field"><span>输出方式</span><select name="mode"><option value="preview">先预览再确认成片</option><option value="direct">直接输出（未人工审片）</option></select></label>
   <label class="field" id="editLanguage"><span>配音语言</span><select name="language"><option value="auto">自动检测</option><option value="en">英语</option><option value="es">西班牙语</option><option value="zh">中文</option></select></label>
@@ -194,6 +194,7 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   <label class="check-label"><input type="checkbox" name="rights_allowed" required>已确认本次所选音频和账号素材的使用范围</label>
   <details><summary>输出位置与本地语音识别设置</summary><label class="field"><span>输出父目录（留空则保存到本机账号工作区）</span><div class="inline"><input id="editOutput" name="output_path" style="flex:1"><button type="button" data-edit-folder="editOutput">选择文件夹</button></div></label><label class="field" id="editAsrModel"><span>自定义模型目录（可留空，默认使用内置模型）</span><input name="model_path" id="editModel"><button type="button" data-edit-folder="editModel">选择模型文件夹</button></label><p class="small muted" id="editAsrHint">时间来自实际音频识别，整段文案用于核对和选片，不按文字长度猜时间。${state.editing_capabilities?.local_asr?.ready?'本地识别已就绪，自动获取时间轴。':'本地识别环境准备中；不要求上传字幕文件。'}</p></details>
   <div id="editPlanConsent" hidden><label class="check-label"><input type="checkbox" name="allow_paid">允许本次使用 ${esc(state.capabilities?.config?.model||'已配置模型')} 规划镜头，使用模型额度</label></div><p id="editUploadProgress" class="small muted" role="status"></p><button id="editCreateSubmit" class="primary">上传并开始剪辑</button></form>`);
+  const fileDurations=new WeakMap();
   for(const id of ['editNarration','editMusic']){
     const input=$('#'+id), status=$('#'+id+'Duration');
     input.addEventListener('change',()=>{
@@ -205,7 +206,13 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
         URL.revokeObjectURL(url);
         if(input.files[0]===file)status.textContent=text;
       };
-      media.onloadedmetadata=()=>done(Number.isFinite(media.duration)?'音频时长 '+media.duration.toFixed(2)+' 秒':'提交后检测音频时长');
+      media.onloadedmetadata=()=>{
+        if(Number.isFinite(media.duration)&&media.duration>0){
+          fileDurations.set(file,media.duration);
+          if(id==='editMusic'&&input.files[0]===file)updateBatchMusic();
+          done('音频时长 '+media.duration.toFixed(2)+' 秒');
+        }else done('提交后检测音频时长');
+      };
       media.onerror=()=>done('提交后检测音频时长');
       media.preload='metadata';
       media.src=url;
@@ -238,6 +245,14 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   function updateBatchMusic(){
     const selectedMusic=musicInput.files?.[0]||musicLibrary.find(item=>item.id===musicHistory.value);
     const musicOnly=audioKind?.value==='music';
+    if(seconds){
+      const duration=fileDurations.get(selectedMusic)??selectedMusic?.duration;
+      const limit=musicOnly&&Number.isFinite(duration)?Math.min(600,Math.floor(duration*1000)/1000):600;
+      seconds.max=String(limit);
+      const hint=$('#editDurationLimit');
+      hint.hidden=!musicOnly||lengthMode.value!=='custom';
+      hint.textContent='自定义成片时长最多 '+limit+' 秒。';
+    }
     musicInput.required=musicOnly&&!musicHistory.value;
     $('#editBatchMusicSummary').hidden=musicOnly;
     const count=usesHistory()?selected.size:0;
