@@ -182,7 +182,7 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   <div id="editBackgroundMusic" class="refbox" style="margin-top:12px"><label class="field"><span id="editMusicLabel">本批背景音乐（可选）</span><select name="history_music_id" aria-label="音乐历史"><option value="">从历史选择音乐</option>${(w.background_music_history||[]).map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${m.duration.toFixed(2)} 秒</option>`).join('')}</select><input id="editMusic" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac"><small id="editMusicDuration" aria-live="polite"></small></label><label id="editMusicVolume" class="field"><span>音乐音量（%）</span><input type="number" name="music_volume" min="0" max="100" value="15"></label><p id="editBatchMusicSummary" class="small muted" aria-live="polite"></p><p id="editBackgroundHint" class="small muted">音乐从每条视频的配音段开头播放，按各自时长裁切，播完后不循环。</p></div>
   ${referenceMode?`<label class="field"><span>参考视频（任意画幅，最多 120 秒）</span><input id="editReference" type="file" accept=".mp4,.mov,.mkv,.webm" required></label><p class="small muted">按参考片的主体、动作和节奏匹配素材库镜头。可只传参考片做无配音预览。</p>`:''}<div id="editScripts"><label class="field"><span>整段配音文案（可选）</span><textarea name="script_0" placeholder="粘贴与配音对应的整段文案，无需提供字幕文件"></textarea></label></div>
   <label class="field"><span>使用哪一种素材识别结果？</span><select name="analysis_mode"><option value="simple" ${P().analysis_mode==='simple'?'selected':''}>简单展示结果</option><option value="standard" ${P().analysis_mode!=='simple'?'selected':''}>明确标准结果（含旧版记录）</option></select></label><label class="field"><span>剪辑匹配方式</span><select name="matching_mode"><option value="duration">时长匹配 · 按断句长度选素材（不调用模型）</option>${P()?.sentence_editing_only?'':`<option value="semantic">语义匹配 · 按文案意思选画面（调用模型）</option>`}</select></label><div class="field" id="editSemanticRequest"><label for="editCommonRequest">本批通用剪辑要求（可选）</label><textarea id="editCommonRequest" name="request" placeholder="第一镜必须用四把光剑旋转&#10;最后一镜优先用带货指引"></textarea>
-    ${P().shot_categories?.length?`<div class="request-categories" role="group" aria-label="展示类别"><small>展示类别（点击插入，多类用 + 连接）</small><div>${categoryButtonsHTML(P().shot_categories)}</div></div>`:''}
+    <div class="request-categories" ${P().shot_categories?.length?'':'hidden'} role="group" aria-label="展示类别"><small>展示类别（点击插入，多类用 + 连接）</small><div>${categoryButtonsHTML(P().shot_categories||[])}</div></div>
     <small>按时长选片时，用素材类别名称指定第几镜、最后一镜或时间码。多条要求用换行或分号分隔。<br><strong>必须</strong>：第一镜必须用四把光剑旋转，只接受这个标签。最后一镜必须用四把光剑旋转+旋转到停下，先找恰好带这两个标签的素材。素材不足时，可用只带其中一个标签的素材补上。<br><strong>优先</strong>：最后一镜优先用带货指引。找不到合适镜头时可以换别的类别。<br><strong>排除</strong>：第三镜必须用单把光剑旋转，排除静止到旋转。</small></div>
   ${referenceMode?'':'<label class="field" id="editTargetDuration"><span>成片时长</span><select name="length_mode"><option value="voice">跟随配音</option><option value="music">跟随背景音乐</option><option value="custom">自定义秒数</option></select><input name="target_duration" aria-label="自定义成片秒数" placeholder="自定义秒数" type="number" min="0.1" max="600" step="0.001"><small id="editDurationLimit" hidden></small></label>'}
   <label class="field" id="editVariantField"><span>候选数量</span><select name="variant_count"><option value="1">1 条</option><option value="5">5 条</option><option value="10">10 条</option><option value="15">15 条</option></select><small>多条候选沿用同一要求，先生成预览供你选择。只统计正式导出的素材引用。</small></label>
@@ -342,9 +342,9 @@ function editBatchDialog(referenceMode=false, preselectedNarrations=[]){
   });
   bindCategoryButtons();
   form.updateCategoryButtons=labels=>{
-    const list=form.querySelector('.request-categories > div');
-    if(!list)return;
-    list.innerHTML=categoryButtonsHTML(labels);
+    const group=form.querySelector('.request-categories');
+    group.hidden=!labels.length;
+    group.querySelector('div').innerHTML=categoryButtonsHTML(labels);
     bindCategoryButtons();
     clearInspections();
   };
