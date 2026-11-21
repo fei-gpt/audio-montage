@@ -4,6 +4,7 @@ import math
 import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 from hypit_adapter import _hypit_command, _json_output, _run
 from montage import fingerprint
@@ -68,7 +69,8 @@ def run(app,p,w,aid,sha):
         a=app.store.get('asset',aid,w)
         if (not a['available'] or a['sha256']!=sha or a.get('user_category')
                 or a.get('sword_recognition',{}).get('status')!='queued'):return
-        a['sword_recognition']={'status':'running'}
+        attempt={'status':'running','attempt_id':uuid4().hex}
+        a['sword_recognition']=attempt
         app.store.put('asset',w,a)
     try:
         result=recognize(app,w,a,app.product(p))
@@ -77,7 +79,11 @@ def run(app,p,w,aid,sha):
         result=dict(status='unrecognized',reason=str(exc)[:500] or type(exc).__name__,labels=[],ranges=[])
     with app.lock:
         current=app.store.get('asset',aid,w)
-        if current['sha256']!=sha or current.get('user_category') or not current['available']:return
+        if current['sha256']!=sha or current.get('user_category') or current.get('sword_recognition')!=attempt:return
+        if not current['available']:
+            current['sword_recognition']=dict(status='unrecognized',reason='识别期间素材不可用，请恢复文件后核对类别')
+            app.store.put('asset',w,current)
+            return
         if any(label not in app.product(p).get('shot_categories',[]) for label in result['labels']):
             result.update(status='unrecognized',reason='识别期间类别标准已更改，请核对',labels=[],ranges=[])
         current['sword_recognition']=result

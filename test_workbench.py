@@ -191,6 +191,43 @@ class WorkbenchTest(unittest.TestCase):
         app.confirm_asset_category(p,w,a['id'],suggestion['labels'])
         self.assertEqual(app.store.get('asset',a['id'],w)['sword_recognition']['status'],'reviewed')
 
+    def test_scanned_file_disappears_during_recognition_then_returns(self):
+        from workbench.sword_recognition import run
+        app=self.app;p=self.p['id'];w=self.w['id']
+        app.update_product(p,dict(name='lightplay'))
+        asset=self.attach()
+        file=Path(asset['path']);away=self.root/'away.mp4'
+        def remove_during_recognition(*args):
+            file.rename(away)
+            app.scan(p,w)
+            raise ValueError('素材无法读取')
+        with patch('workbench.sword_recognition.recognize',side_effect=remove_during_recognition):
+            run(app,p,w,asset['id'],asset['sha256'])
+        away.rename(file)
+        with patch.object(app,'queue_sword') as queue:
+            app.scan(p,w);app.scan(p,w)
+            queue.assert_not_called()
+        restored=app.store.get('asset',asset['id'],w)
+        self.assertTrue(restored['available'])
+        self.assertEqual(restored['sword_recognition']['status'],'unrecognized')
+        self.assertIn('素材',restored['sword_recognition']['reason'])
+
+    def test_old_recognition_result_does_not_overwrite_new_attempt_on_same_bytes(self):
+        from workbench.sword_recognition import run
+        app=self.app;p=self.p['id'];w=self.w['id']
+        app.update_product(p,dict(name='lightplay'))
+        asset=self.attach()
+        def delayed(*args):
+            current=app.store.get('asset',asset['id'],w)
+            current['sword_recognition']={'status':'running','attempt_id':'new'}
+            app.store.put('asset',w,current)
+            return dict(status='suggested',labels=['静态展示'],ranges=[],reason='旧任务结果')
+        with patch('workbench.sword_recognition.recognize',side_effect=delayed):
+            run(app,p,w,asset['id'],asset['sha256'])
+        current=app.store.get('asset',asset['id'],w)
+        self.assertEqual(current['sword_recognition'],{'status':'running','attempt_id':'new'})
+        self.assertNotIn('category_review',current)
+
     def test_sword_failure_and_manual_edit_during_recognition(self):
         from workbench.sword_recognition import run
         app=self.app;p=self.p['id'];w=self.w['id'];app.update_product(p,dict(name='toy'))

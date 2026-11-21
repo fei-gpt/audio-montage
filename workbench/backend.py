@@ -174,7 +174,12 @@ class Workbench:
                 w=workspace['id']
                 for a in self.store.all('asset',w):
                     status=a.get('sword_recognition',{}).get('status')
-                    if a.get('user_category') or not a.get('available'):continue
+                    if a.get('user_category'):continue
+                    if not a.get('available'):
+                        if status=='running':
+                            a['sword_recognition']=dict(status='unrecognized',reason='工作台重启时素材不可用，请恢复文件后核对类别')
+                            self.store.put('asset',w,a)
+                        continue
                     if status=='running':
                         a['sword_recognition']={'status':'queued'}
                         self.store.put('asset',w,a)
