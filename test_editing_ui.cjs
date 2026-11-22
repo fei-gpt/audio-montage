@@ -17,6 +17,23 @@ context.editingHome();assert.equal((elements['#main'].innerHTML.match(/data-edit
 assert.ok(elements['#main'].innerHTML.includes('download="toy-152-165-6-97-215-1.mp4"'));
 assert.ok(elements['#main'].innerHTML.includes('>toy-152-165-6-97-215-1.mp4</td>'));
 assert.ok(!elements['#main'].innerHTML.includes('<video'));assert.ok(elements['#main'].innerHTML.includes('先预览再确认'));
+// A refresh can temporarily replace the loaded history with a loading message.
+const originalLookup=context.$;
+const previousTable={dataset:{batch:'batch',page:'1'},scrollLeft:45,scrollTop:120};
+function renderHistoryWith(nextTable){
+  let first=true;
+  context.$=key=>{
+    if(key!=='#editHistoryTable')return originalLookup(key);
+    if(first){first=false;return previousTable}
+    return nextTable;
+  };
+  try{context.editingHome()}finally{context.$=originalLookup}
+}
+renderHistoryWith(null);
+const refreshedTable={};
+renderHistoryWith(refreshedTable);
+assert.equal(refreshedTable.scrollLeft,45);
+assert.equal(refreshedTable.scrollTop,120);
 console.log('Editing pagination (123 tasks), compact list and lazy video loading passed');
 let modal='';context.dialog=(title,html)=>{modal=html};context.wb=()=>'/account';
 vm.runInContext(fs.readFileSync('workbench/static/generation.js','utf8'),context);

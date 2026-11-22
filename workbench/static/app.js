@@ -50,6 +50,11 @@ async function refresh(renderPage=true,background=false){
     const next=await api('/api/state?view=workbench&history=index'+(scope?'&editing_product='+encodeURIComponent(scope):'')+query);
     if(sequence!==refreshSequence||scope!==desiredScope()||next.unchanged)return;
     if(background&&document.activeElement?.matches('input:not([type=checkbox]),textarea,select'))return;
+    if(renderPage&&scope&&activeModule()==='editing'){
+      await preloadVisibleHistory(next);
+      if(sequence!==refreshSequence||scope!==desiredScope())return;
+      if(background&&document.activeElement?.matches('input:not([type=checkbox]),textarea,select'))return;
+    }
     const previousLabels=JSON.stringify(P()?.shot_categories||[]);
     loadedScope=scope;state=next;
     initialProducts=state.products.map(({id,name})=>({id,name}));
@@ -62,7 +67,10 @@ async function refresh(renderPage=true,background=false){
     if(pid&&!P())pid=null;
     if(wid&&!W())wid=null;
     $('#engineStatus').textContent=`${state.capabilities.hypit?'Hypit已就绪':'FFmpeg证据准备'} · ${state.capabilities.vision_ready?'视觉服务可用':'视觉服务待配置'}`;
-    if(renderPage)render();
+    if(renderPage){
+      if(background&&activeModule()==='editing')editingHome(true);
+      else render();
+    }
   }finally{
     if(sequence===refreshSequence){pendingScope=undefined;schedulePoll()}
   }

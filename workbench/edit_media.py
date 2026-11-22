@@ -9,13 +9,13 @@ from pathlib import Path
 from montage import probe, video_geometry, fit_video_filter, portrait_geometry, media_duration, fingerprint
 
 
-def run(args):
-    return subprocess.run([str(x) for x in args],check=True,capture_output=True,timeout=3600)
+def run(args, *, cwd=None):
+    return subprocess.run([str(x) for x in args],check=True,capture_output=True,timeout=3600,cwd=cwd)
 
 
 def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,check_cancel=lambda:None,
-           clips=(),music=None,music_volume=.15,output_name=None,target_duration=None):
-    folder=Path(folder);folder.mkdir(parents=True,exist_ok=False)
+           clips=(),music=None,music_volume=.15,output_name=None,target_duration=None,cues=(),sounds_by_id=None,reviewed_schedule=None):
+    folder=Path(folder).resolve();folder.mkdir(parents=True,exist_ok=False)
     width,height=(360,640) if preview else (1080,1920)
     body_frames=math.ceil((target_duration or media_duration(probe(audio),'audio'))*30-1e-7)
     if sum(p['frames'] for p in parts)!=body_frames:raise ValueError('画面未覆盖完整配音时间轴')
@@ -42,7 +42,11 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
     sequence=[p for p in sequence if p['role']=='intro']+[dict(p,role='body') for p in parts]+[p for p in sequence if p['role']=='outro']
     expected=(head_frames+body_frames+tail_frames)/30
     paths=[Path(audio)]+[Path(p['path']) for p in sequence if 'path' in p]+([Path(music['path'])] if music else [])
+    sounds_by_id=sounds_by_id or {}
+    paths.extend(Path(sound['path']) for sound in sounds_by_id.values())
     hashes={p:fingerprint(p) for p in dict.fromkeys(paths)}
+    for sound in sounds_by_id.values():
+        if hashes[Path(sound['path'])]!=sound['sha256']:raise ValueError('音效文件已变化，请重新选择')
     for part in parts:
         if 'asset_sha256' in part and hashes[Path(part['path'])]!=part['asset_sha256']:
             raise ValueError(f'素材「{Path(part["path"]).name}」与剪辑方案中的版本不一致，请重新选片并核对预览')
@@ -113,10 +117,28 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
         filters+=(f'[{stream}:a:0]aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,'
                   f'atrim=start_sample={cut*1600},asetpts=PTS-STARTPTS,adelay={cut*1600}S:all=1[headtail];')
         mix+='[headtail]';count+=1
+    from workbench.edit_cues import schedule, text_filter
+    events=reviewed_schedule if reviewed_schedule is not None else schedule(cues,parts,head_frames,head_frames+body_frames+tail_frames)
+    if len(events)!=len(cues):raise ValueError('文字和音效设置与预览不一致')
+    text_filters=[]
+    for i,(cue,event) in enumerate(zip(cues,events)):
+        if 'skipped' in event:continue
+        frame=event['frame']
+        if cue.get('text'):
+            text_filters.append(text_filter(folder,i,cue,frame,height))
+        if cue.get('sound_id'):
+            stream=cmd.count('-i')
+            cmd+=['-i',sounds_by_id[cue['sound_id']]['path']]
+            filters+=(f'[{stream}:a:0]aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS,'
+                      f"volume={cue['volume']/100},atrim=duration={expected-frame/30},adelay={frame*1600}S:all=1[effect{i}];")
+            mix+=f'[effect{i}]';count+=1
+    video_options=['-c:v','copy']
+    if text_filters:
+        video_options=['-vf',','.join(text_filters),'-c:v','libx264','-preset','fast','-pix_fmt','yuv420p']
     filters+=mix+f'amix=inputs={count}:duration=first:normalize=0,alimiter=limit=0.98:level=false:latency=1[a]'
     out=folder/(output_name or ('preview.mp4' if preview else 'final.mp4'))
-    run(cmd+['-filter_complex',filters,'-map','0:v:0','-map','[a]','-c:v','copy','-c:a','aac',
-             '-ar','48000','-t',expected,'-movflags','+faststart',out])
+    run(cmd+['-filter_complex',filters,'-map','0:v:0','-map','[a]',*video_options,'-c:a','aac',
+             '-ar','48000','-t',expected,'-movflags','+faststart',out],cwd=folder)
     check_cancel();oi=probe(out);portrait_geometry(oi)
     run(['ffmpeg','-v','error','-xerror','-nostdin','-i',out,'-f','null','-'])
     if abs(media_duration(oi,'video')-expected)>.05:raise ValueError('成片时长检查未通过')
@@ -126,5 +148,5 @@ def render(intro,audio,parts,folder,preview=False,keep_original_audio=False,chec
             'source_files_unchanged':True,'intro_audio_preserved':bookend_audio,'bookends_preserved':True,
             'music_body_only':bool(music),'music_volume':music_volume if music else 0,'music_looped':False,
             'intro_audio_tail_seconds':intro_audio_tail[2] if intro_audio_tail else 0,
-            'keep_original_audio':keep_original_audio,'human_reviewed':False}
+            'cue_schedule':events,'keep_original_audio':keep_original_audio,'human_reviewed':False}
     return out,report

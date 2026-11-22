@@ -52,7 +52,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self,method):
         try:
             self.guard();url=urllib.parse.urlsplit(self.path);path=url.path
-            media=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/media/(asset|export|edit|gen|narration)/([a-f0-9-]+)',path)
+            media=re.fullmatch(r'/api/products/([a-f0-9]+)/workspaces/([a-f0-9]+)/media/(asset|export|edit|gen|narration|sound)/([a-f0-9-]+)',path)
             if media and method=='GET':
                 p,w,k,ident=media.groups();sig=urllib.parse.parse_qs(url.query).get('sig',[''])[0];return self.serve_file(self.app.media(p,w,k,ident,sig))
             if not path.startswith('/api/'):
@@ -119,13 +119,17 @@ class Handler(BaseHTTPRequestHandler):
                 if compact:w['shots']=[shot_summary(shot) for shot in w['shots']]
                 w['assets']=app.visible_assets(w['id'],libraries=w['libraries'])
                 uploads=s.all('edit_upload',w['id'])
+                sound_history={}
                 music_history={}
                 for upload in reversed(uploads):
+                    if upload.get('kind')=='sound' and Path(upload['path']).is_file():
+                        sound_history.setdefault(upload['sha256'],dict(id=upload['id'],name=upload['name'],media_url=self.media_url(p['id'],w['id'],'sound',upload['id'])))
                     if upload.get('kind')!='music' or not Path(upload['path']).is_file():
                         continue
                     music_history.setdefault(upload['sha256'], {
                         key:upload[key] for key in ('id','name','duration')
                     })
+                w['sound_history']=list(sound_history.values())
                 w['background_music_history']=list(music_history.values())
                 w['editing_batches']=app.editing.list(p['id'],w['id'],assets=w['assets'])
                 exported_audio={task['audio'] for batch in w['editing_batches'] for task in batch['tasks']
@@ -213,6 +217,10 @@ class Handler(BaseHTTPRequestHandler):
         if sorting and method=='POST':
             from workbench.material_sorting import review
             return review(app,p,w,sorting[1],b)
+        if rest=='editing/sound-samples' and method=='POST':
+            from workbench.openai_sound import generate_sample
+            result=generate_sample(app,p,w,b)
+            return dict(result,media_url=self.media_url(p,w,'sound',result['id']))
         if rest=='editing/narration-request/inspect' and method=='POST':return app.editing.inspect_narration_request(p,w,b)
         if rest=='editing/pairs/inspect' and method=='POST':return app.editing.inspect_pairs(p,w,b)
         if rest=='narrations' and method=='POST':return app.generation.create_narrations(p,w,b)

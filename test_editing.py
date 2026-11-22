@@ -288,6 +288,35 @@ class EditingTest(unittest.TestCase):
     def proposal(self):return {'parts':[{'shot_id':self.shot['id'],'start':0,'frames':60,'reason':'red toy matches narration'}],'gaps':[]}
     def upload(self,file,kind,w=None):
         return self.app.editing.upload(self.p['id'],(w or self.w)['id'],file.name,kind,io.BytesIO(file.read_bytes()),file.stat().st_size)
+    def test_manual_cues_shared_batch_and_independent_review(self):
+        p,w=self.p['id'],self.w['id']
+        edit=self.app.editing
+        voice=self.upload(self.audio,'narration')
+        sound=self.upload(self.audio,'sound')
+        cue=dict(anchor='time',seconds=.2,text='亮相',sound_id=sound['id'])
+        body=dict(narrations=[dict(id=voice['id']),dict(id=voice['id'])],rights_allowed=True,cues=[cue])
+        other=self.upload(self.audio,'sound',self.w2)
+        with self.assertRaises(Problem):
+            edit.create_uploaded(p,w,dict(body,cues=[dict(cue,sound_id=other['id'])]))
+        b=edit.create_uploaded(p,w,body)
+        a,sibling=edit.tasks(w,b['id'])
+        a.update(plan=edit.validate_plan(b,a,self.proposal()),plan_revision='first',status='planned')
+        self.app.store.put('edit_task',w,a)
+        self.op(b,'preview',dict(task_ids=[a['id']]))
+        a=self.app.store.get('edit_task',a['id'],w)
+        self.assertEqual(a['preview']['report']['cue_schedule'],[{'frame':6}])
+        edit.action(p,w,b['id'],'save-cues',dict(task_ids=[a['id']],plan_revision='first',cues=[dict(cue,seconds=.6)]))
+        edit.run(p,w,b['id'],[a['id']],'preview')
+        revised=self.app.store.get('edit_task',a['id'],w)
+        self.assertEqual(revised['preview']['report']['cue_schedule'],[{'frame':18}])
+        self.assertEqual(revised['plan']['parts'],a['plan']['parts'])
+        self.assertNotIn('cues',self.app.store.get('edit_task',sibling['id'],w))
+        self.assertEqual(edit.batch(p,w,b['id'])['rules']['cues'][0]['seconds'],.2)
+        with self.assertRaises(Problem):
+            edit.action(p,w,b['id'],'output',dict(task_ids=[a['id']],content_confirmed=True,preview_sha256=a['preview']['sha256'],plan_revision='first'))
+        self.op(b,'output',dict(task_ids=[a['id']],content_confirmed=True,preview_sha256=revised['preview']['sha256'],plan_revision=revised['plan_revision']))
+        self.assertEqual(self.app.store.get('edit_task',a['id'],w)['output']['report']['cue_schedule'],[{'frame':18}])
+
     def test_uploaded_audio_only_reuses_library_and_preserves_script(self):
         narration=self.upload(self.audio,'narration')
         b=self.app.editing.create(self.p['id'],self.w['id'],{'narrations':[{'id':narration['id'],'script':'Show the red toy.'}],'rights_allowed':True})

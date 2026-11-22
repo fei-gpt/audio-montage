@@ -265,7 +265,7 @@ class Editing:
 
     def upload(self,p,w,name,kind,stream,size):
         self.app.workspace(p,w)
-        if kind not in {'narration','music','clip','reference'}:raise Problem('上传类型无效')
+        if kind not in {'narration','music','sound','clip','reference'}:raise Problem('上传类型无效')
         ext=Path(name).suffix.lower()
         allowed={'.mp4','.mov','.mkv','.webm'} if kind in {'clip','reference'} else {'.mp3','.wav','.m4a','.aac','.ogg','.flac'}
         if ext not in allowed or not 0<size<=500_000_000:raise Problem('不支持的格式、空文件或超过500MB')
@@ -285,6 +285,15 @@ class Editing:
                 'path':str(target),'sha256':fingerprint(target),'duration':duration})
         except Exception:
             target.unlink(missing_ok=True);raise
+
+    def sound(self,w,ident):
+        sound=self.store.get('edit_upload',ident,w)
+        if sound['kind']!='sound':raise Problem('请选择当前账号的音效')
+        return sound
+
+    def edit_cues(self,w,rows):
+        from workbench.edit_cues import validate
+        return validate(rows,lambda ident:self.sound(w,ident))
 
     def background_music(self,w,ident):
         if not ident:return None
@@ -364,6 +373,7 @@ class Editing:
                 'request':common_request,'music_volume':gain/100,
                 'width':1080,'height':1920,'fps':30,'batch_dedup':True,'auto_preview':variants>1 or body.get('auto_preview') is True},
             'product_profile':product.get('profile',{})}
+        if body.get('cues'):batch['rules']['cues']=self.edit_cues(w,body['cues'])
         if reference:
             batch['rules']['reference_matching']=2
             batch['rules']['reference_only']=reference_only
@@ -855,6 +865,7 @@ class Editing:
             if type(zoom) not in (int,float) or not math.isfinite(zoom) or not 1<=zoom<=1.05:raise ValueError('放大倍率只允许1至1.05')
             part={'source_name':c.get('name',''),'zoom':zoom,'shot_id':c['id'],'asset_id':c['asset_id'],'asset_sha256':c['asset_sha256'],'start':start,'end':end,'frames':frames,
                   'timeline_start':cursor/30,'timeline_end':(cursor+frames)/30,'reason':reason,'human_reviewed':False}
+            part['confirmed_categories']=c.get('confirmed_categories',[])
             if c.get('origin_sha256'):part['origin_sha256']=c['origin_sha256']
             if c.get('analysis_version'):part['analysis_version']=c['analysis_version']
             if b['rules'].get('reference_matching')==2:
@@ -1447,10 +1458,13 @@ class Editing:
             destination=Path(b['output_path'])/(t['name']+'-'+t['id'][:8]+'-'+attempt[:8])
             library=Path(parts[0]['path']).parent.name[:20].rstrip(' .') or '成片'
             output_name=f"{library}-{t['id'][:8]}.mp4"
+        cues=t.get('cues',b['rules'].get('cues',[]))
+        sounds={ident:self.sound(t['workspace_id'],ident) for ident in {c['sound_id'] for c in cues if 'sound_id' in c}}
+        reviewed=t.get('preview',{}).get('report',{}).get('cue_schedule') if not preview else None
         with TemporaryDirectory(prefix='render-',dir=task_root) as scratch:
             folder=Path(scratch)/'media'
             out,report=render(t.get('intro'),t['audio'],parts,folder,preview,b['rules']['keep_original_audio'],lambda:self.check_stop(t),
-                clips=clips,music=b.get('music'),music_volume=b['rules'].get('music_volume',.15),output_name=output_name,target_duration=sum(p['frames'] for p in parts)/30)
+                cues=cues,sounds_by_id=sounds,reviewed_schedule=reviewed,clips=clips,music=b.get('music'),music_volume=b['rules'].get('music_volume',.15),output_name=output_name,target_duration=sum(p['frames'] for p in parts)/30)
             self.check_inputs(b,t)
             report['dedup_report']=t.get('dedup_report',{})
             if b['rules'].get('reference_evidence'):
@@ -1597,7 +1611,7 @@ class Editing:
         for variant in range(1,variants+1):
             tid=uid()
             task={key:source[key] for key in ('name','audio','audio_sha256','audio_duration','target_duration','intro',
-                                             'intro_sha256','intro_duration','script','individual_request') if key in source}
+                                             'intro_sha256','intro_duration','script','individual_request','cues') if key in source}
             task.update(id=tid,batch_id=bid,product_id=p,workspace_id=w,created_at=now(),status='queued',
                         stage='沿用原要求，等待重新选片',operation='plan',queue_attempt=bid,regenerated_from=source['id'],
                         revision_root=source.get('revision_root',source['id']))
@@ -1671,6 +1685,17 @@ class Editing:
                 changes=[('edit_task',dict(t,status=status,stage='在当前处理步骤结束后停止，记录已保留')) for t in affected]
                 self.store.put_many(w,changes)
                 return {'saved':True}
+            if action=='save-cues':
+                if len(chosen)!=1:raise Problem('请选择一条预览')
+                t=chosen[0]
+                if not t.get('plan') or t['status'] in {'queued','running','completed','cancelled','invalid'} or body.get('plan_revision')!=t.get('plan_revision'):
+                    raise Problem('当前任务已变化，请重新打开预览',409)
+                t.update(cues=self.edit_cues(w,body.get('cues')),plan_revision=uid(),human_reviewed=False,status='planned',stage='文字和音效已修改，等待重新预览')
+                t.pop('review',None)
+                self.retire_preview(t)
+                self.store.put('edit_task',w,t)
+                self.cleanup_retired_previews(t)
+                return self.action(p,w,bid,'preview',{'task_ids':[t['id']]})
             if action in {'save-plan','replace-shot','repair-shots'}:
                 if len(chosen)!=1:raise Problem('每次修改一个任务')
                 t=self.store.get('edit_task',chosen[0]['id'],w)
