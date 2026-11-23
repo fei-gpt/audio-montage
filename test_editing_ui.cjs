@@ -8,6 +8,12 @@ const context={location:{hash:'#editing'},$:key=>elements[key]??=element(),esc:S
   defaultWorkspace:()=>workspace.id,accountSelector:()=>'',bindAccounts(){},refresh(){},render(){},
   generationSection:()=>'',bindGeneration(){},document:{querySelectorAll:()=>[]}};
 vm.createContext(context);vm.runInContext(fs.readFileSync('workbench/static/narration.js','utf8'),context);vm.runInContext(fs.readFileSync('workbench/static/editing-pairs.js','utf8'),context);vm.runInContext(fs.readFileSync('workbench/static/editing.js','utf8'),context);
+const durationTask={audio_duration:34.011417,target_duration:25};
+assert.equal(context.editMovieDuration(durationTask,{}),'预计 25.00 秒');
+durationTask.preview={report:{duration:24.97}};
+assert.equal(context.editMovieDuration(durationTask,{}),'预览 24.97 秒');
+durationTask.output={report:{duration:24.93}};
+assert.equal(context.editMovieDuration(durationTask,{}),'24.93 秒');
 const rows=Array.from({length:123},(_,i)=>({id:String(i),name:String(i),status:'ready',audio_duration:2}));
 rows[0].output={media_url:'/media/edit/task-1?sig=token',path:'C:\\outputs\\toy-152-165-6-97-215-1.mp4'};
 let page=context.editingRows(rows,1);assert.equal(page.rows.length,20);assert.equal(page.pages,7);

@@ -39,6 +39,15 @@ function editBatchLabel(batch){
   return [name,statuses.join(' / '),date].filter(Boolean).join(' · ');
 }
 function canRegenerate(t){return Boolean(t.plan)&&!['queued','running','invalid'].includes(t.status)}
+function editMovieDuration(task,batch){
+  const actual=task.output?.report?.duration;
+  if(Number.isFinite(actual))return actual.toFixed(2)+' 秒';
+  const preview=task.preview?.report?.duration;
+  if(Number.isFinite(preview))return '预览 '+preview.toFixed(2)+' 秒';
+  if(task.output||closedEditStatuses.has(task.status)||task.intro||batch.clips?.length)return '—';
+  const planned=task.target_duration??task.audio_duration;
+  return Number.isFinite(planned)?'预计 '+planned.toFixed(2)+' 秒':'—';
+}
 function editingHistory(batches,batch,data){
   if(!batch)return '<section class="panel recent"><h2>剪辑历史</h2><p class="muted">还没有剪辑记录。</p></section>';
   const selector=`<div class="section-heading"><h2>剪辑历史</h2><label class="field"><span>查看记录</span><select id="editBatch" aria-label="查看剪辑记录">${[...batches].reverse().map(b=>`<option value="${esc(b.id)}" ${b.id===batch.id?'selected':''}>${esc(editBatchLabel(b))}</option>`).join('')}</select></label></div>`;
@@ -67,8 +76,8 @@ function editingHistory(batches,batch,data){
       ${busy?'<button data-edit-batch-action="pause">暂停本批</button>':''}
       <button data-edit-batch-action="cancel">取消本批</button></div>`:''}
     <div id="editHistoryTable" data-batch="${esc(batch.id)}" data-page="${data.page}" class="asset-table-wrap" style="margin-top:12px;max-height:650px"><table class="asset-table">
-      <thead><tr><th>输入文件</th><th>音频时长</th><th>状态</th><th>成片文件名</th><th>结果</th></tr></thead>
-      <tbody>${data.rows.map(t=>`<tr><td>${esc(t.name)}${t.variant?`<div class="small muted">候选 ${t.variant} / ${batch.variant_count}</div>`:''}</td><td>${t.audio_duration==null?'—':t.audio_duration.toFixed(2)+' 秒'}</td><td>${badge(editStatusLabel(t))}${t.source_warning||t.error||['queued','running'].includes(t.status)?`<div class="small muted">${esc(t.source_warning||t.error||t.stage)}</div>`:''}</td>
+      <thead><tr><th>输入文件</th><th>成片时长</th><th>状态</th><th>成片文件名</th><th>结果</th></tr></thead>
+      <tbody>${data.rows.map(t=>`<tr><td>${esc(t.name)}${t.variant?`<div class="small muted">候选 ${t.variant} / ${batch.variant_count}</div>`:''}</td><td>${editMovieDuration(t,batch)}</td><td>${badge(editStatusLabel(t))}${t.source_warning||t.error||['queued','running'].includes(t.status)?`<div class="small muted">${esc(t.source_warning||t.error||t.stage)}</div>`:''}</td>
         <td class="file-path">${esc(editOutputName(t.output)||'—')}</td>
         <td><div class="inline">${t.output?.media_url?editDownloadLink(t.output):t.preview&&!t.source_warning&&!closedEditStatuses.has(t.status)&&!['queued','running'].includes(t.status)?`<button data-edit-review="${esc(t.id)}">核对预览</button>`:'<button disabled>下载成片</button>'}
         ${t.output||!t.preview||t.source_warning||closedEditStatuses.has(t.status)||['queued','running'].includes(t.status)?`<button data-edit-detail="${esc(t.id)}">${t.output?'查看成片':t.preview?(t.source_warning?'查看旧预览':'查看预览'):closedEditStatuses.has(t.status)?'查看记录':'查看任务'}</button>`:''}
