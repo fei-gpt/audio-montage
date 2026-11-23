@@ -50,6 +50,19 @@ class EditingTest(unittest.TestCase):
 
     def tearDown(self):self.tmp.cleanup()
 
+    def test_implicit_shot_order_and_tail(self):
+        from workbench.editing import parse_shot_requests
+        product={'shot_categories':['揭示','旋转','静态','指引']}
+        rules=parse_shot_requests('揭示\n旋转+静态；旋转；最后一镜 静态＋指引；旋转',product,10)
+        self.assertEqual([r['ordinal'] for r in rules],[1,2,3,None,4])
+        self.assertTrue(all(r['preferred'] for r in rules))
+        self.assertTrue(rules[3]['last'])
+        self.assertEqual(rules[3]['labels'],['静态','指引'])
+        mixed=parse_shot_requests('第三镜必须用旋转；揭示',product,10)
+        self.assertTrue(mixed[0]['only'])
+        self.assertEqual(mixed[1]['ordinal'],4)
+        with self.assertRaises(Problem):parse_shot_requests('旋转+错别字',product,10)
+
     def test_minimum_uses_shortest_existing_source(self):
         w=self.w['id']
         self.assertEqual(self.app.editing.minimum_shot_frames(w),15)

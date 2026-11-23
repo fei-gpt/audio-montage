@@ -102,12 +102,22 @@ def parse_shot_requests(text, product, duration):
             labels.update({label.replace('光剑',''):canonical for label in aliases})
     digits='零一二三四五六七八九'
     rules=[]
+    next_ordinal=1
     for line in re.split(r'[\n；;。]+|[，,](?=\s*(?:第|最后|尾镜|\d\d:))',text):
         line=line.strip()
         if not line:continue
         match=re.match(r'^(?:第\s*([0-9一二三四五六七八九十]+)\s*(?:个)?镜(?:头)?|(最后(?:一(?:个)?)?镜(?:头)?|尾镜)|(\d\d:\d\d:\d\d:\d\d))\s*(.*)$',line)
-        if not match:raise Problem(f'无法识别剪辑要求：{line}。请写明第几镜、最后一镜或时间码')
-        number,last,timecode,description=match.groups()
+        if match:
+            number,last,timecode,description=match.groups()
+        else:
+            number,last,timecode,description=str(next_ordinal),None,None,line
+        bare_labels=[item.strip() for item in re.split(r'[+＋]',description.strip())]
+        shorthand=all(item in labels for item in bare_labels)
+        if not match and not shorthand:
+            raise Problem(f'无法识别剪辑要求：{line}。简写请直接填写展示类别，多类用 + 连接')
+        if shorthand and (not match or last):
+            description='优先用'+'+'.join(bare_labels)
+            line=(f'第{number}镜' if number else '最后一镜')+description
         ordinal=None
         if number:
             if number.isascii():ordinal=int(number)
@@ -116,6 +126,7 @@ def parse_shot_requests(text, product, duration):
                 ordinal=(digits.index(left) if left in digits and left else 1)*10+(digits.index(right) if right in digits and right else 0)
             else:ordinal=digits.index(number) if len(number)==1 else 0
             if not ordinal:raise Problem(f'镜头编号无效：{line}')
+            next_ordinal=ordinal+1
         chunks=re.split(r'[,，、]?\s*(?:排除|不要包含|不能包含|不得包含|不使用)\s*',description)
         def resolve(value):
             return next((labels[label] for label in sorted(labels,key=len,reverse=True) if label in value),None)
